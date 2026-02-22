@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h1>Flock</h1>
+    <h2 style="text-align:center; margin-bottom:20px;">Welcome, {{ username }}</h2>
+
+    <div id="chatList"></div>
+
+    <div class="card" style="margin-top: 16px;">
+        <h2>New chat</h2>
+        <form onsubmit="startNewChat(event)">
+            <input type="text" id="newContact" placeholder="Enter username..." autofocus>
+            <button class="btn" type="submit">Start chat</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const socket = io();
+    const username = "{{ username }}";
+
+    function loadChats() {
+        socket.emit('load_chats');
+    }
+
+    socket.on('chats_loaded', function(chats) {
+        const list = document.getElementById('chatList');
+        if (chats.length === 0) {
+            list.innerHTML = '<div class="status">No chats yet. Start a new one below.</div>';
+            return;
+        }
+
+        list.innerHTML = '';
+        chats.forEach(function(c) {
+            const item = document.createElement('a');
+            item.className = 'chat-item';
+            item.href = '/chat/' + c.contact;
+
+            let badge = '';
+            if (c.unread > 0) {
+                badge = '<div class="badge">' + c.unread + '</div>';
+            }
+
+            const preview = c.last_message.length > 40
+                ? c.last_message.substring(0, 40) + '...'
+                : c.last_message;
+
+            item.innerHTML =
+                '<div class="chat-info">' +
+                    '<div class="chat-name">' + c.contact + '</div>' +
+                    '<div class="chat-preview">' + preview + '</div>' +
+                '</div>' + badge;
+
+            list.appendChild(item);
+        });
+    });
+
+    socket.on('new_message', function(data) {
+        loadChats();
+    });
+
+    function startNewChat(e) {
+        e.preventDefault();
+        const contact = document.getElementById('newContact').value.trim().replace('@', '');
+        if (contact && contact !== username) {
+            window.location.href = '/chat/' + contact;
+        }
+    }
+
+    loadChats();
+</script>
+{% endblock %}

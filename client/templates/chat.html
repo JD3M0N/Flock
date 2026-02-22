@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container" style="padding-bottom: 80px;">
+    <a href="/chats" class="back-link">&larr; Back to chats</a>
+    <h2 style="margin-bottom: 16px;">{{ contact }}</h2>
+
+    <div class="messages-area" id="messages"></div>
+</div>
+
+<div class="chat-input-area">
+    <form onsubmit="sendMsg(event)">
+        <input type="text" id="msgInput" placeholder="Type a message..." autocomplete="off" autofocus>
+        <button class="btn" type="submit">Send</button>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const socket = io();
+    const username = "{{ username }}";
+    const contact = "{{ contact }}";
+    const messagesDiv = document.getElementById('messages');
+
+    function addMessage(author, text, date) {
+        const div = document.createElement('div');
+        div.className = 'message ' + (author === username ? 'message-own' : 'message-other');
+        div.innerHTML = '<div>' + escapeHtml(text) + '</div>' +
+            (date ? '<div class="message-date">' + date + '</div>' : '');
+        messagesDiv.appendChild(div);
+    }
+
+    function scrollToBottom() {
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    socket.emit('load_chat_history', {contact: contact});
+    socket.emit('mark_seen', {contact: contact});
+
+    socket.on('chat_history', function(messages) {
+        messagesDiv.innerHTML = '';
+        messages.forEach(function(m) {
+            addMessage(m.author, m.text, m.date);
+        });
+        scrollToBottom();
+    });
+
+    socket.on('new_message', function(data) {
+        if (data.sender === contact) {
+            addMessage(data.sender, data.text, '');
+            scrollToBottom();
+            socket.emit('mark_seen', {contact: contact});
+        }
+    });
+
+    socket.on('message_sent', function(data) {
+        if (data.contact === contact) {
+            addMessage(username, data.text, '');
+            scrollToBottom();
+        }
+    });
+
+    function sendMsg(e) {
+        e.preventDefault();
+        const input = document.getElementById('msgInput');
+        const text = input.value.trim();
+        if (!text) return;
+        socket.emit('send_message', {contact: contact, text: text});
+        input.value = '';
+    }
+</script>
+{% endblock %}

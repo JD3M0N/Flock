@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h1>Flock</h1>
+    <div class="card">
+        <h2>Connect to a server</h2>
+        <button class="btn" id="discoverBtn" onclick="discover()">
+            Search for servers
+        </button>
+        <div id="status" class="status hidden"></div>
+        <div id="serverList" style="margin-top: 16px;"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const socket = io();
+
+    function discover() {
+        const btn = document.getElementById('discoverBtn');
+        const status = document.getElementById('status');
+        btn.disabled = true;
+        status.classList.remove('hidden');
+        status.innerHTML = '<span class="spinner"></span> Searching...';
+        document.getElementById('serverList').innerHTML = '';
+        socket.emit('discover_servers');
+    }
+
+    socket.on('servers_found', function(servers) {
+        const btn = document.getElementById('discoverBtn');
+        const status = document.getElementById('status');
+        const list = document.getElementById('serverList');
+        btn.disabled = false;
+
+        if (servers.length === 0) {
+            status.textContent = 'No servers found. Try again.';
+            return;
+        }
+
+        status.classList.add('hidden');
+        list.innerHTML = '';
+        servers.forEach(function(s) {
+            const item = document.createElement('div');
+            item.className = 'server-item';
+            item.innerHTML = '<div><strong>' + s.name + '</strong><br><small style="color:#6b7280">' + s.ip + '</small></div>';
+            item.onclick = function() { connectServer(s); };
+            list.appendChild(item);
+        });
+    });
+
+    function connectServer(server) {
+        const status = document.getElementById('status');
+        status.classList.remove('hidden');
+        status.innerHTML = '<span class="spinner"></span> Connecting...';
+        socket.emit('connect_server', server);
+    }
+
+    socket.on('server_connected', function(data) {
+        window.location.href = '/register';
+    });
+</script>
+{% endblock %}

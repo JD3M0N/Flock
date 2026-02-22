@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h1>Flock</h1>
+    <div class="card">
+        <h2>Choose your username</h2>
+        <form onsubmit="registerUser(event)">
+            <input type="text" id="username" placeholder="Username (no spaces or hyphens)" maxlength="20" autofocus>
+            <button class="btn" type="submit" id="regBtn">Register</button>
+        </form>
+        <div id="error" class="status hidden" style="color: #ef4444;"></div>
+        <div id="status" class="status hidden"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const socket = io();
+
+    function registerUser(e) {
+        e.preventDefault();
+        const username = document.getElementById('username').value.trim();
+        const error = document.getElementById('error');
+        const status = document.getElementById('status');
+
+        error.classList.add('hidden');
+
+        if (!username || username.includes(' ') || username.includes('-')) {
+            error.textContent = 'Invalid username. No spaces or hyphens allowed.';
+            error.classList.remove('hidden');
+            return;
+        }
+
+        document.getElementById('regBtn').disabled = true;
+        status.innerHTML = '<span class="spinner"></span> Registering...';
+        status.classList.remove('hidden');
+        socket.emit('register_user', {username: username});
+    }
+
+    socket.on('registered', function(data) {
+        window.location.href = '/chats';
+    });
+
+    socket.on('register_error', function(data) {
+        const error = document.getElementById('error');
+        const status = document.getElementById('status');
+        document.getElementById('regBtn').disabled = false;
+        status.classList.add('hidden');
+        error.textContent = data.error;
+        error.classList.remove('hidden');
+    });
+</script>
+{% endblock %}
