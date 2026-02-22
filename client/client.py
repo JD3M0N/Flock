@@ -26,6 +26,10 @@ class chat_client:
         self.server_down = False
 
         self.contact_list = {}
+        self.on_message_received = None
+
+        self.crypto = None
+        self.pending_key_exchanges = {}
 
         self.db = db_manager.user_db()
 
@@ -43,6 +47,12 @@ class chat_client:
     def set_user(self, username):
         self.username = username
         self.db.set_db(username)
+        try:
+            import crypto_manager
+            self.crypto = crypto_manager.CryptoManager(username)
+        except Exception as e:
+            print(f"Crypto not available: {e}")
+            self.crypto = None
         self.run_background()
 
 
@@ -51,9 +61,9 @@ class chat_client:
         address = None
 
         while True:
-            part, address = socket.recvfrom(1024)
+            part, address = socket.recvfrom(8192)
             response += part.decode()
-            if response.endswith('\r\n') or len(part) < 1024:
+            if response.endswith('\r\n') or len(part) < 8192:
                 break
         return response, address
 
@@ -70,7 +80,7 @@ class chat_client:
 
     def send_message(self, recipient, message):
 
-        _, sender, text = message.split(" ", 2) # Ok this is a parche, but it works
+        _, sender, text = message.split(" ", 2)
 
         if recipient == self.username:
             self.db.insert_new_message(self.username, recipient, text, True)
@@ -78,32 +88,35 @@ class chat_client:
 
         try:
             address = self.contact_list.get(recipient)
-            # print(f"Sending message to {recipient}")
             if not address:
                 address = self.resolve_user(recipient)
 
+            if not address:
+                return False
+
+            if self.crypto:
+                self.ensure_peer_key(recipient)
+
+            if self.crypto and self.crypto.has_peer_key(recipient):
+                encrypted_text = self.crypto.encrypt_message(recipient, text)
+                wire_message = f"MESSAGE {sender} {encrypted_text}"
+            else:
+                wire_message = message
+
             if self.is_user_online(address):
-                # print("User is online")
                 self.db.insert_new_message(self.username, recipient, text, True)
-                self.message_socket.sendto(message.encode(), address)
+                self.message_socket.sendto(wire_message.encode(), address)
                 return True
             else:
-                # print("User is offline")
                 address = self.resolve_user(recipient)
-                if address:
-                    if self.is_user_online(address):
-                        # print("User is online2")
-                        self.db.insert_new_message(self.username, recipient, text, True)
-                        self.message_socket.sendto(message.encode(), address)
-                        return True
-                    else:
-                        # print("User is still offline")
-                        return False
-                else:
-                    # print("Error resolving user")
-                    return False
+                if address and self.is_user_online(address):
+                    self.db.insert_new_message(self.username, recipient, text, True)
+                    self.message_socket.sendto(wire_message.encode(), address)
+                    return True
+                return False
         except Exception as e:
             print(f"ERROR sending message: {e}")
+            return False
 
     def add_to_pending_list(self, recipient, message):
         with self.pending_lock:
@@ -120,6 +133,25 @@ class chat_client:
             return (ip, int(port))
         else:
             return None
+
+    def ensure_peer_key(self, recipient, timeout=5):
+        if not self.crypto or self.crypto.has_peer_key(recipient):
+            return True
+
+        address = self.contact_list.get(recipient)
+        if not address:
+            address = self.resolve_user(recipient)
+        if not address:
+            return False
+
+        event = threading.Event()
+        self.pending_key_exchanges[recipient] = event
+        request = f"PUBKEY_REQ {self.username}"
+        self.message_socket.sendto(request.encode(), address)
+
+        success = event.wait(timeout=timeout)
+        self.pending_key_exchanges.pop(recipient, None)
+        return success
         
     def register_user(self, username):
         try:
@@ -180,18 +212,48 @@ class chat_client:
         while self.running:
             try:
                 message, address = self.read_response(self.message_socket)
-                # print(f"Message from {address}: {message}")
                 if message.startswith("MESSAGE"):
-                    _, sender, text = message.split(" ", 2)
- 
-                    self.db.insert_new_message(sender, self.username, text, False)
+                    _, sender, encrypted_text = message.split(" ", 2)
 
+                    if self.crypto and self.crypto.has_peer_key(sender):
+                        try:
+                            text = self.crypto.decrypt_message(encrypted_text)
+                        except Exception:
+                            text = encrypted_text
+                    else:
+                        text = encrypted_text
+
+                    self.db.insert_new_message(sender, self.username, text, False)
                     self.contact_list[sender] = address
-                
+
+                    if self.on_message_received:
+                        try:
+                            self.on_message_received(sender, text)
+                        except Exception:
+                            pass
+
+                elif message.startswith("PUBKEY_REQ"):
+                    _, requester = message.split(" ", 1)
+                    if self.crypto:
+                        response = f"PUBKEY_RES {self.username} {self.crypto.get_public_key_b64()}"
+                        self.message_socket.sendto(response.encode(), address)
+                        self.contact_list[requester] = address
+                        if not self.crypto.has_peer_key(requester):
+                            req = f"PUBKEY_REQ {self.username}"
+                            self.message_socket.sendto(req.encode(), address)
+
+                elif message.startswith("PUBKEY_RES"):
+                    _, peer_username, b64_key = message.split(" ", 2)
+                    if self.crypto:
+                        self.crypto.store_peer_key(peer_username, b64_key)
+                        self.contact_list[peer_username] = address
+                        event = self.pending_key_exchanges.get(peer_username)
+                        if event:
+                            event.set()
+
                 elif message.startswith("PING"):
                     self.message_socket.sendto("PONG".encode(), address)
             except Exception as e:
-                # print(f"Error in the listening: {e}")
                 pass
 
     def is_user_online(self, address):
