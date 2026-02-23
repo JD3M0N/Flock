@@ -7,6 +7,14 @@ import time
 import random
 # from termcolor import colored as col
 import struct
+import logging
+
+# Configure basic logging to console
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s:%(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 HASH_MOD = 10**18+3
@@ -56,10 +64,10 @@ class ChatServer:
         servers = self.discover_servers()
 
         if not servers:
-            print("No other servers running")
+            logger.info("No other servers running")
         else:
             for server in servers:
-                print(f"Server found: {server[0]} at {server[1]}")
+                logger.info(f"Server found: {server[0]} at {server[1]}")
             self.join_to_servers(servers)
 
         self.command_socket.bind(("", 12345))
@@ -119,7 +127,7 @@ class ChatServer:
                             longest_range_server = server
                             longest_range = range
             except Exception as e:
-                print(f"Error getting range from server '{server[0]}': {e}")
+                logger.warning(f"Error getting range from server '{server[0]}': {e}")
 
         return longest_range_server
     
@@ -141,7 +149,7 @@ class ChatServer:
                 else:
                     self.successor = None
             else:
-                print(f"Joining request failed: {response}") 
+                logger.error(f"Joining request failed: {response}") 
                 raise ValueError
 
     def get_successors(self):
@@ -160,7 +168,7 @@ class ChatServer:
                     else:
                         successors = self.successors
                 except Exception as e:
-                    print(f"Getting backup successors failed with exception: {e}")
+                    logger.warning(f"Getting backup successors failed with exception: {e}")
                     successors = self.successors
             return successors
     
@@ -176,7 +184,7 @@ class ChatServer:
                 message = data.decode()
 
                 if message != "PING":
-                    print(f"Message from {address}: {message}")
+                    logger.info(f"Message from {address}: {message}")
 
                 if message.startswith("DISCOVER"):
                     self.command_socket.sendto(f"{self.name}".encode(), address)
@@ -188,6 +196,7 @@ class ChatServer:
                     self.command_socket.sendto(f"OK {self.lower_bound} {self.upper_bound}".encode(), address)
 
                 elif message.startswith("JOIN"):
+                    logger.info(f"Processing JOIN from {address}")
                     self.process_join_request(address)
                     self.print_info()
 
@@ -204,6 +213,7 @@ class ChatServer:
                         answer_to_ip = address[0]
                         answer_to_port = address[1]
                     self.register_user(answer_to_ip, int(answer_to_port), username, ip, int(port))
+                    logger.info(f"REGISTER request for user '{username}' handled/forwarded")
 
                 elif message.startswith("RESOLVE"):
                     try:
@@ -213,6 +223,7 @@ class ChatServer:
                         answer_to_ip = address[0]
                         answer_to_port = address[1]
                     self.resolve_user(answer_to_ip, int(answer_to_port), username)
+                    logger.info(f"RESOLVE request for user '{username}' processed")
 
                 elif message.startswith("SUCC"):
                     _, successors = message.split(" ", 1)
@@ -223,6 +234,7 @@ class ChatServer:
 
                 elif message.startswith("FIX"):
                     self.crisis = True
+                    logger.warning("Entering FIX/crisis mode")
                     self.fix_tape()
                     self.replicants_manager()
                     self.correct_bd()
@@ -234,6 +246,7 @@ class ChatServer:
                         self.replicants.append(address[0])
                     with self.db_lock:
                         self.db_manager.register_replic_user(username, ip, port, address[0])
+                    logger.info(f"Registered replic user '{username}' from {address[0]}")
 
                 elif message.startswith("DROP_REPLICS"):
                     _, owner = message.split(" ")
@@ -250,7 +263,7 @@ class ChatServer:
                     return
 
             except Exception as e:
-                print(f"Server error: {e}")
+                logger.error(f"Server error: {e}")
 
 
     def listen_for_ping(self):
@@ -280,12 +293,18 @@ class ChatServer:
 
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             if username_hash < self.lower_bound:
-                sock.sendto(f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port}".encode(), (self.predecessor, 12345))
-                print(f"Sent to predecessor {self.predecessor}")
+                sock.sendto(
+                    f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port}".encode(),
+                    (self.predecessor, 12345),
+                )
+                logger.info(f"Forwarded REGISTER for '{username}' to predecessor {self.predecessor}")
 
             elif username_hash > self.upper_bound:
-                sock.sendto(f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port}".encode(), (self.successor, 12345))
-                print(f"Sent to successor {self.successor}")
+                sock.sendto(
+                    f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port}".encode(),
+                    (self.successor, 12345),
+                )
+                logger.info(f"Forwarded REGISTER for '{username}' to successor {self.successor}")
             else:
                 with self.db_lock:
                     self.db_manager.register_user(username, ip, port)
@@ -294,7 +313,7 @@ class ChatServer:
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
                 for replic in self.replics:
                     sock.sendto(f"REPLIC {username} {ip} {port}".encode(), (replic, 12345))
-                print(response)
+                logger.info(response)
 
 
     def resolve_user(self, answer_to_ip, answer_to_port, username):
@@ -303,12 +322,18 @@ class ChatServer:
 
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             if username_hash < self.lower_bound:
-                sock.sendto(f"RESOLVE {answer_to_ip} {answer_to_port} {username}".encode(), (self.predecessor, 12345))
-                print(f"Sent to predecessor {self.predecessor}")
+                sock.sendto(
+                    f"RESOLVE {answer_to_ip} {answer_to_port} {username}".encode(),
+                    (self.predecessor, 12345),
+                )
+                logger.info(f"Forwarded RESOLVE for '{username}' to predecessor {self.predecessor}")
 
             elif username_hash > self.upper_bound:
-                sock.sendto(f"RESOLVE {answer_to_ip} {answer_to_port} {username}".encode(), (self.successor, 12345))
-                print(f"Sent to successor {self.successor}")
+                sock.sendto(
+                    f"RESOLVE {answer_to_ip} {answer_to_port} {username}".encode(),
+                    (self.successor, 12345),
+                )
+                logger.info(f"Forwarded RESOLVE for '{username}' to successor {self.successor}")
 
             else:
                 with self.db_lock:
@@ -317,11 +342,11 @@ class ChatServer:
                     ip, port = address
                     response = f"OK {ip} {port}"
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
-                    print(f"Resolved address of user '{username}', ({ip}:{port})")
+                    logger.info(f"Resolved address of user '{username}', ({ip}:{port})")
                 else:
                     response = f"ERROR 404 User not found"
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
-                    print(f"ERROR 404 User not found")
+                    logger.warning(f"User not found during RESOLVE: {username}")
 
 
     def process_join_request(self, joinee):
@@ -377,12 +402,12 @@ class ChatServer:
                         _, _ = sock.recvfrom(1024)
 
                 except Exception as e:
-                    print("Tape integrity compromised")
+                    logger.warning("Tape integrity compromised")
                     sock.sendto("FIX".encode(), broadcast_address)
 
             time.sleep(1)
 
-        print("Shutting tape integrity check off")
+        logger.info("Shutting tape integrity check off")
 
     def fix_tape(self):
         """Attempt to repair the ring by checking neighbors and promoting backups when needed."""
@@ -424,7 +449,7 @@ class ChatServer:
                     self.successor = successor
                     return
                 except Exception as e:
-                    print(f"Server {successor} unavailable: {e}")
+                    logger.warning(f"Server {successor} unavailable: {e}")
             self.upper_bound = HASH_MOD - 1
             self.successor = None
             self.successors = []
@@ -470,7 +495,7 @@ class ChatServer:
                 if new_replics_needed > 0:            
                     new_replics = self.find_new_replics(new_replics_needed, replics)
                     if new_replics:
-                        print(f"New replics: {new_replics}")
+                        logger.info(f"New replics: {new_replics}")
                     replics.extend(new_replics)
                     self.replics = replics
 
@@ -516,7 +541,7 @@ class ChatServer:
                     self.replicants.remove(replicant)
                     with self.db_lock:
                         self.db_manager.drop_replics(replicant)
-                    print(f"Asimilated data from {replicant}")
+                    logger.info(f"Asimilated data from {replicant}")
 
 
     def info_updater(self):
@@ -564,10 +589,10 @@ class ChatServer:
 
     def print_info(self):
         """Print a short status line describing the server state."""
-        print(f"Server '{self.name}' on ({self.get_ip()}:12345). Storing in range ({self.lower_bound}, {self.upper_bound}). Predecessor is {self.predecessor}, successor is {self.successor}")
-        print(f"Successors: {self.successors}")
-        print(f"Replics: {self.replics}")
-        print(f"Replicants: {self.replicants}")
+        logger.info(f"Server '{self.name}' on ({self.get_ip()}:12345). Storing in range ({self.lower_bound}, {self.upper_bound}). Predecessor is {self.predecessor}, successor is {self.successor}")
+        logger.info(f"Successors: {self.successors}")
+        logger.info(f"Replics: {self.replics}")
+        logger.info(f"Replicants: {self.replicants}")
 
     def rolling_hash(self, s: str, base=911382629, mod=HASH_MOD) -> int:   
         """Compute a rolling hash for string `s` used to distribute keys in the ring."""
@@ -598,35 +623,35 @@ class ChatServer:
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
         
-        print(f"[Muticast] Escuchando mensajes en {MCAST_GRP}:{MCAST_PORT}")
+        logger.info(f"[Muticast] Escuchando mensajes en {MCAST_GRP}:{MCAST_PORT}")
         
 
         while True:
             try:
                 data, addr = sock.recvfrom(BUFFER_SIZE)
                 message = data.decode().strip()
-                print(f"Recibido mensaje: '{message}' desde {addr}")
+                logger.info(f"Recibido mensaje: '{message}' desde {addr}")
                 if message.startswith(DISCOVER_MSG + ":"):
                     local_ip = self.get_ip()
                     _, rec_ip, rec_port = message.split(":")
-                    print(f"{rec_ip} {rec_port}")
+                    logger.debug(f"Multicast reply target {rec_ip} {rec_port}")
                     sock.sendto(local_ip.encode(), (rec_ip, int(rec_port)))
                 else:
                     local_ip = self.get_ip()
                     sock.sendto(local_ip.encode(), addr)
             except Exception as e:
-                print(f"Error en el listener: {e}")
+                logger.error(f"Error en el listener: {e}")
                 time.sleep(1)
 
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Use: python server.py <name>")
+        logger.error("Use: python server.py <name>")
         sys.exit(1)
     name = sys.argv[1]
     server = ChatServer(name)
-    server.start()
+    server.start() 
 
 
 
