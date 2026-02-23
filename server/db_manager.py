@@ -2,6 +2,7 @@ import sqlite3
 import os
 
 class server_db:
+    """Server-side simple SQLite storage for user registration and replication info."""
     def __init__(self):
         self.db_directory = "server/db"
         self.db_route = ""
@@ -49,14 +50,12 @@ class server_db:
             existing_user = cursor.fetchone()
             
             if existing_user:
-                # Actualizar información existente
                 cursor.execute('''
                     UPDATE users 
                     SET ip = ?, port = ?
                     WHERE username = ?
                 ''', (ip, port, username))
             else:
-                # Insertar nuevo usuario
                 cursor.execute('''
                     INSERT INTO users (username, ip, port)
                     VALUES (?, ?, ?)
@@ -76,14 +75,12 @@ class server_db:
             existing_user = cursor.fetchone()
             
             if existing_user:
-                # Actualizar información existente
                 cursor.execute('''
                     UPDATE replic_users 
                     SET ip = ?, port = ?, owner = ?
                     WHERE username = ?
                 ''', (ip, port, owner, username))
             else:
-                # Insertar nuevo usuario
                 cursor.execute('''
                     INSERT INTO replic_users (username, ip, port, owner)
                     VALUES (?, ?, ?, ?)
@@ -100,7 +97,6 @@ class server_db:
             ''', (username,))
             
             address = cursor.fetchone()
-            # print(address)
             return address
         
 

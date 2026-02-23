@@ -57,6 +57,13 @@ def proxy(port: int, read_buffer: int = 4196) -> None:
         data, ancdata, _, address = sock.recvmsg(read_buffer, socket.MSG_CMSG_CLOEXEC)
         client_net = address[0].split(".")[2]
         primary_net = LOCAL_ADDRS[1].split(".")[2]
+        """UDP proxy that forwards multicast discovery messages preserving original destination.
+
+        This proxy listens on a range of UDP ports and forwards multicast DISCOVER messages
+        to the correct multicast group using the original destination address provided
+        by the kernel ancillary data.
+        """
+
         # Avoid addr loops and pck duplicates
         if (
             address[0] in RESERVED_ADDRS

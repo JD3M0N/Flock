@@ -8,6 +8,7 @@ import struct
 
 
 class chat_client:
+    """Client-side chat manager handling server discovery, messaging and local storage."""
     def __init__(self):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.client_socket.settimeout(3)
@@ -34,17 +35,16 @@ class chat_client:
         self.db = db_manager.user_db()
 
     def server_auto_reconnect(self):
+        """Background loop that attempts reconnect when server is marked down."""
         while self.running:
-            # print("Checking server connection")
             if self.server_down:
-                # print("Server down")
                 if self.auto_connect():
                     self.server_down = False
-                    # print("Server reconnected")
             time.sleep(3)
 
 
     def set_user(self, username):
+        """Configure client for `username`, initialize DB and crypto, start background threads."""
         self.username = username
         self.db.set_db(username)
         try:
@@ -57,6 +57,7 @@ class chat_client:
 
 
     def read_response(self, socket):
+        """Read a possibly segmented response from a socket until end marker or short chunk."""
         response = ''
         address = None
 
@@ -68,18 +69,23 @@ class chat_client:
         return response, address
 
     def send_command(self, command) -> str:
+        """Send a command to the configured server and return its response string.
+
+        Marks the server as down on any communication error.
+        """
         try:
-            self.client_socket.sendto(
-                f"{command}".encode(), self.server_address)
+            self.client_socket.sendto(f"{command}".encode(), self.server_address)
             response, _ = self.read_response(self.client_socket)
             return response
         except Exception as e:
             self.server_down = True
-            # print(f"ERROR in communication with server: {e}")
             return f"ERROR in communication with server: {e}"
 
     def send_message(self, recipient, message):
+        """Send `message` to `recipient`. Handles encryption and pending delivery.
 
+        `message` is expected in the form 'MESSAGE <sender> <text>'. Returns True on success.
+        """
         _, sender, text = message.split(" ", 2)
 
         if recipient == self.username:
@@ -119,6 +125,7 @@ class chat_client:
             return False
 
     def add_to_pending_list(self, recipient, message):
+        """Add a message to the pending queue for `recipient` (thread-safe)."""
         with self.pending_lock:
             if recipient in self.pending_list.keys():
                 self.pending_list[recipient].append(message)
@@ -126,6 +133,7 @@ class chat_client:
                 self.pending_list[recipient] = [message]
 
     def resolve_user(self, username):
+        """Ask server to resolve `username` and cache the result locally."""
         response = self.send_command(f"RESOLVE {username}")
         if response.startswith("OK"):
             _, ip, port = response.split()
@@ -135,6 +143,7 @@ class chat_client:
             return None
 
     def ensure_peer_key(self, recipient, timeout=5):
+        """Ensure we have a stored peer key for `recipient`, requesting it if needed."""
         if not self.crypto or self.crypto.has_peer_key(recipient):
             return True
 
@@ -154,6 +163,7 @@ class chat_client:
         return success
         
     def register_user(self, username):
+        """Register `username` on the server and, on success, configure local user state."""
         try:
             message_ip = self.get_ip()
             _, message_port = self.message_socket.getsockname()
@@ -168,11 +178,11 @@ class chat_client:
             return False
 
     def discover_servers(self):
+        """Discover servers on the local network using UDP broadcast."""
         self.client_socket.settimeout(3)
         servers = []
         broadcast_address = ("<broadcast>", 12345)
-        self.client_socket.setsockopt(
-            socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         try:
             self.client_socket.sendto("DISCOVER".encode(), broadcast_address)
             while True:
@@ -185,6 +195,7 @@ class chat_client:
         return servers
 
     def connect_to_server(self, server):
+        """Set the active server address from a `(name, ip)` tuple."""
         try:
             self.server_address = (server[1], 12345)
             self.server_name = server[0]
@@ -192,23 +203,23 @@ class chat_client:
             return f"ERROR connecting with server: {e}"
         
     def auto_connect(self):
+        """Try to auto-connect to the first discovered server. Returns True on success."""
         servers = self.discover_servers()
-        # servers = self.discover_servers_multicast()
         if len(servers) == 0:
             return False
-        
+
         self.connect_to_server(servers[0])
         return True
 
 
     def load_chat(self, interlocutor):
-
+        """Return the chat history with `interlocutor` from local DB."""
         chat = self.db.get_previous_chat(self.username, interlocutor)
-
         return chat
 
 
     def listen_for_messages(self):
+        """Background loop that receives messages on `self.message_socket` and handles them."""
         while self.running:
             try:
                 message, address = self.read_response(self.message_socket)
@@ -253,10 +264,11 @@ class chat_client:
 
                 elif message.startswith("PING"):
                     self.message_socket.sendto("PONG".encode(), address)
-            except Exception as e:
+            except Exception:
                 pass
 
     def is_user_online(self, address):
+        """Return True if a short UDP ping to `address` receives a PONG reply."""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.settimeout(0.5)
@@ -266,16 +278,14 @@ class chat_client:
                 response, _ = sock.recvfrom(1024)
                 return response.decode() == "PONG"
         except socket.timeout:
-            # print(f"Timeout while checking if user is online at {address}")
             pass
-        except Exception as e:
-            # print(f"Error checking if user is online at {address}: {e}")
+        except Exception:
             pass
         return False
 
     def send_pending_messages(self):
+        """Background worker that retries delivery of pending messages."""
         while self.running:
-            # print(f"Pending messages: {self.pending_list}")
             try:
                 with self.pending_lock:
                     pending_users = list(self.pending_list.keys())
@@ -286,32 +296,25 @@ class chat_client:
                             if len(self.pending_list[username]) == 0:
                                 del self.pending_list[username]
                                 break
-                        else:
-                            pass
                 time.sleep(1)
             except Exception as e:
                 print(f"Error sending pending messages: {e}")
                 pass
 
     def get_ip(self):
+        """Return the IP address of the local host name."""
         return socket.gethostbyname(socket.gethostname())
 
     def run_background(self):
-        # print("Starting background threads")
+        """Start background threads for message receiving, pending delivery and reconnection."""
         threading.Thread(target=self.listen_for_messages, daemon=True).start()
         threading.Thread(target=self.send_pending_messages, daemon=True).start()
         threading.Thread(target=self.server_auto_reconnect, daemon=True).start()
-        # print("Background threads started")
         time.sleep(1)
 
 
     def discover_servers_multicast(self, timeout: int = 3) -> list:
-        """
-        Sends a multicast request to discover servers and waits for responses.
-
-        :param timeout: Maximum time (in seconds) to wait for responses.
-        :return: List of discovered server IPs.
-        """
+        """Discover servers using multicast; return list of (name, ip) tuples."""
         MCAST_GRP = "224.0.0.1"
         MCAST_PORT = 10003
         MESSAGE = "DISCOVER_SERVER"
@@ -332,7 +335,7 @@ class chat_client:
             print(f"Error enviando el mensaje multicast: {e}")
             return []
 
-        print('a')
+        # helper debug removed
 
         servers = []
         start_time = time.time()

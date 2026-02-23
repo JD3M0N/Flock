@@ -29,6 +29,12 @@ def index():
 
 @app.route('/servers')
 def servers():
+    """Flask + SocketIO web UI glue for the chat client.
+
+    Defines HTTP routes and socket event handlers that call into a
+    `client.chat_client` instance.
+    """
+
     return render_template('servers.html')
 
 

@@ -4,26 +4,28 @@ import os
 import threading
 
 class console_app:
+    """Console-based UI for interacting with a `chat_client` instance."""
     def __init__(self):
-        
         self.running = True
         self.interlocutor = None
         self.update_chat_flag = False
-
         self.chat_client = client.chat_client()
 
     def print_message(self, message):
-        if(message[1] == self.chat_client.username):
+        """Print a single message tuple in a human readable form."""
+        if (message[1] == self.chat_client.username):
             print(f"{message[3]} [ID: {message[0]}, Date: {message[4]}]")
         else:
             print(f"{message[1]}: {message[3]} [ID: {message[0]}, Date: {message[4]}]")
 
     def print_chat(self, interlocutor):
+        """Print the full chat history with `interlocutor`."""
         chat = self.chat_client.load_chat(interlocutor)
         for message in chat:
             self.print_message(message)
 
     def print_unseen_resume(self):
+        """Print a short summary of unseen messages grouped by author."""
         resume = self.chat_client.db.get_unseen_resume(self.chat_client.username)
 
         if not resume:
@@ -39,20 +41,18 @@ class console_app:
 
 
     def update_chat(self, interlocutor):
+        """Background updater that fetches and prints unseen messages for the active chat."""
         while self.update_chat_flag:
             unseen = self.chat_client.db.get_unseen_messages(self.chat_client.username, interlocutor)
-            # print(unseen)
-            # time.sleep(1)
-            
             for message in unseen:
                 self.print_message(message)
 
-            # print(f"Chat u[pdated {self.chat_client.username} - {interlocutor}")
             self.chat_client.db.set_messages_as_seen(self.chat_client.username, interlocutor)
             time.sleep(0.1)
 
 
     def run_ui(self):
+        """Start the interactive console UI loop (blocking)."""
         status = self.search_servers_ui()
         if status != "OK":
             return
@@ -62,7 +62,7 @@ class console_app:
         if status != "OK":
             return
         time.sleep(1)
-        
+
         status = "MAIN"
 
         while True:
@@ -80,7 +80,6 @@ class console_app:
                 print("An error ocurred. Please wait...")
                 time.sleep(3)
                 status = "MAIN"
-        print("WIIIIII TEST")
 
     def search_servers_ui(self):
         try:

@@ -14,6 +14,11 @@ FAIL_TOLERANCE = 3
 
 
 class ChatServer:
+    """Distributed chat server node implementing a simple ring and replication logic.
+
+    The server listens for UDP commands, maintains a local SQLite DB via `server.db_manager`,
+    and runs background tasks for pinging, replication and multicast discovery.
+    """
     def __init__(self, name):
         self.name = name
 
@@ -44,6 +49,7 @@ class ChatServer:
     #region Start Sequence 
     
     def start(self):
+        """Initialize DB, discover/join other servers and start background services."""
         with self.db_lock:
             self.db_manager.set_db(self.name)
 
@@ -56,29 +62,16 @@ class ChatServer:
                 print(f"Server found: {server[0]} at {server[1]}")
             self.join_to_servers(servers)
 
-        # if self.successor:
-            # self.successors = self.get_successors()
-
         self.command_socket.bind(("", 12345))
         self.ping_socket.bind(("", 12346))
 
         self.print_info()
 
-        integrity_check = threading.Thread(target=self.tape_integrity_check, daemon=True)
-        integrity_check.start()
-        successors_provider = threading.Thread(target=self.successors_provider, daemon=True)
-        successors_provider.start()
-        ping_listener = threading.Thread(target=self.listen_for_ping, daemon=True)
-        ping_listener.start()
-        # correct_bd = threading.Thread(target=self.correct_bd, daemon=True)
-        # correct_bd.start()
-        replics_manager = threading.Thread(target=self.replics_manager, daemon=True)
-        replics_manager.start()
-        # replicants_manager = threading.Thread(target=self.replicants_manager, daemon=True)
-        # replicants_manager.start()
-        info_updater = threading.Thread(target=self.info_updater, daemon=True)
-        info_updater.start()
-
+        threading.Thread(target=self.tape_integrity_check, daemon=True).start()
+        threading.Thread(target=self.successors_provider, daemon=True).start()
+        threading.Thread(target=self.listen_for_ping, daemon=True).start()
+        threading.Thread(target=self.replics_manager, daemon=True).start()
+        threading.Thread(target=self.info_updater, daemon=True).start()
         threading.Thread(target=self.multicast_listener, daemon=True).start()
 
         self.listen_for_messages()
@@ -86,7 +79,8 @@ class ChatServer:
 
 
     def discover_servers(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock: 
+        """Discover other servers using UDP broadcast and return a list of (name, ip)."""
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(1)
             servers = []
             broadcast_address = ("<broadcast>", 12345)
@@ -103,10 +97,12 @@ class ChatServer:
             return servers
 
     def join_to_servers(self, servers):
+        """Join the cluster by requesting to join the server that manages the largest range."""
         longest_range_server = self.get_longest_range_server(servers)
         self.request_join(longest_range_server)
 
     def get_longest_range_server(self, servers):
+        """Query servers for their range and return the server with largest range."""
         longest_range = -1
         longest_range_server = None
         for server in servers:
@@ -129,6 +125,7 @@ class ChatServer:
     
 
     def request_join(self, server):
+        """Send a JOIN request to `server` and initialize local bounds & neighbors on success."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(1)
             sock.sendto(f"JOIN".encode(), (server[1], 12345))
@@ -148,6 +145,7 @@ class ChatServer:
                 raise ValueError
 
     def get_successors(self):
+        """Return a list of successor IPs queried from the current successor node."""
         successors = []
         if self.successor:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -157,12 +155,9 @@ class ChatServer:
                     data, _ = sock.recvfrom(1024)
                     response = data.decode()
                     if response.startswith("OK"):
-                        print(f"Respnse from backup is :{response}")
                         _, successors = response.split(" ", 1)
                         successors = successors.split(" ")
-                        print(f"Now backup successors are: {successors}")
                     else:
-                        print(f"Getting backup successors failed: {response}")
                         successors = self.successors
                 except Exception as e:
                     print(f"Getting backup successors failed with exception: {e}")
@@ -174,29 +169,28 @@ class ChatServer:
     #region Commands
 
     def listen_for_messages(self):
-
+        """Main loop handling incoming UDP command messages on `self.command_socket`."""
         while self.running:
             try:
                 data, address = self.command_socket.recvfrom(1024)
                 message = data.decode()
-                
+
                 if message != "PING":
                     print(f"Message from {address}: {message}")
 
-                
                 if message.startswith("DISCOVER"):
                     self.command_socket.sendto(f"{self.name}".encode(), address)
 
                 elif message.startswith("PING"):
                     self.command_socket.sendto("PONG".encode(), address)
-                
+
                 elif message.startswith("RANGE"):
                     self.command_socket.sendto(f"OK {self.lower_bound} {self.upper_bound}".encode(), address)
-                
+
                 elif message.startswith("JOIN"):
                     self.process_join_request(address)
                     self.print_info()
-                
+
                 elif message.startswith("PRED_CHANGE"):
                     _, predecessor = message.split(" ")
                     self.change_predecessor(predecessor)
@@ -205,21 +199,19 @@ class ChatServer:
                 elif message.startswith("REGISTER"):
                     try:
                         _, answer_to_ip, answer_to_port, username, ip, port = message.split(" ")  
-                    except Exception as e:
+                    except Exception:
                         _, username, ip, port = message.split(" ")
                         answer_to_ip = address[0]
                         answer_to_port = address[1]
-                    ########################## Use regex to identify if it is one option or another 
                     self.register_user(answer_to_ip, int(answer_to_port), username, ip, int(port))
 
                 elif message.startswith("RESOLVE"):
                     try:
                         _, answer_to_ip, answer_to_port, username = message.split(" ")  
-                    except Exception as e:
+                    except Exception:
                         _, username = message.split(" ")
                         answer_to_ip = address[0]
                         answer_to_port = address[1]
-                    ########################## Use regex to identify if it is one option or another 
                     self.resolve_user(answer_to_ip, int(answer_to_port), username)
 
                 elif message.startswith("SUCC"):
@@ -231,13 +223,10 @@ class ChatServer:
 
                 elif message.startswith("FIX"):
                     self.crisis = True
-                    # fix_task = threading.Thread(target=self.fix_tape, daemon=True)
-                    # fix_task.start()
                     self.fix_tape()
                     self.replicants_manager()
                     self.correct_bd()
                     self.crisis = False
-
 
                 elif message.startswith("REPLIC"):
                     _, username, ip, port = message.split(" ")
@@ -245,7 +234,7 @@ class ChatServer:
                         self.replicants.append(address[0])
                     with self.db_lock:
                         self.db_manager.register_replic_user(username, ip, port, address[0])
-                
+
                 elif message.startswith("DROP_REPLICS"):
                     _, owner = message.split(" ")
                     with self.db_lock:
@@ -265,6 +254,7 @@ class ChatServer:
 
 
     def listen_for_ping(self):
+        """Respond to simple PING messages on the ping socket with PONG."""
         while self.running:
             try:
                 data, address = self.ping_socket.recvfrom(1024)
@@ -276,48 +266,46 @@ class ChatServer:
 
 
     def change_predecessor(self, predecessor):
+        """Update the predecessor pointer for this node."""
         self.predecessor = predecessor
 
 
     def register_user(self, answer_to_ip, answer_to_port, username, ip, port):
-        
+        """Register a user in the ring or forward the registration to the appropriate neighbor.
+
+        If the user's hash belongs to this node's range, persist it locally and notify replicas.
+        Otherwise forward the REGISTER command to predecessor or successor.
+        """
         username_hash = self.rolling_hash(username)
-        # print('a')
 
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             if username_hash < self.lower_bound:
-                # print('a')
                 sock.sendto(f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port}".encode(), (self.predecessor, 12345))
                 print(f"Sent to predecessor {self.predecessor}")
-                # print('b')
-        
+
             elif username_hash > self.upper_bound:
-                # print('c')
                 sock.sendto(f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port}".encode(), (self.successor, 12345))
                 print(f"Sent to successor {self.successor}")
-                # print('d')
             else:
-                # print('e')
                 with self.db_lock:
                     self.db_manager.register_user(username, ip, port)
                 response = f"OK User '{username}' in ({ip}:{port}) successfully registered"
                 if answer_to_ip != '.':
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
-                # print('f')
                 for replic in self.replics:
                     sock.sendto(f"REPLIC {username} {ip} {port}".encode(), (replic, 12345))
                 print(response)
 
 
     def resolve_user(self, answer_to_ip, answer_to_port, username):
-
+        """Resolve `username` to an (ip,port) tuple, forwarding the request if needed."""
         username_hash = self.rolling_hash(username)
-        
+
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             if username_hash < self.lower_bound:
                 sock.sendto(f"RESOLVE {answer_to_ip} {answer_to_port} {username}".encode(), (self.predecessor, 12345))
                 print(f"Sent to predecessor {self.predecessor}")
-        
+
             elif username_hash > self.upper_bound:
                 sock.sendto(f"RESOLVE {answer_to_ip} {answer_to_port} {username}".encode(), (self.successor, 12345))
                 print(f"Sent to successor {self.successor}")
@@ -337,20 +325,22 @@ class ChatServer:
 
 
     def process_join_request(self, joinee):
+        """Process an incoming JOIN request from `joinee` and hand over half the range."""
         joinee_lower_bound = int((self.lower_bound + self.upper_bound) / 2)
         joinee_upper_bound = self.upper_bound
         joinee_successor = "_" if self.successor is None else self.successor
         joinee_predecessor = self.get_ip()
 
         self.request_predecessor_change(self.successor, joinee[0])
-        
+
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.sendto(f"OK {joinee_lower_bound} {joinee_upper_bound} {joinee_predecessor} {joinee_successor}".encode(), joinee)
-   
+
         self.upper_bound = joinee_lower_bound - 1
         self.successor = joinee[0]
 
     def request_predecessor_change(self, target, new_predecessor):
+        """Notify `target` server that its predecessor should be changed to `new_predecessor`."""
         if target is not None:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.settimeout(1)
@@ -362,6 +352,7 @@ class ChatServer:
     #region Services
 
     def successors_provider(self):
+        """Periodically advertise successor information to predecessor if needed."""
         while self.running:
             if self.successor is None and self.predecessor:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -370,8 +361,8 @@ class ChatServer:
 
 
     def tape_integrity_check(self):
+        """Check successor/predecessor liveness and broadcast FIX if ring integrity is compromised."""
         while self.running:
-            # self.successors = self.get_successors()
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 broadcast_address = ("<broadcast>", 12345)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -380,11 +371,11 @@ class ChatServer:
                     if self.successor:
                         sock.sendto("PING".encode(), (self.successor, 12346))
                         _, _ = sock.recvfrom(1024)
-                
+
                     if self.predecessor:
                         sock.sendto("PING".encode(), (self.predecessor, 12346))
                         _, _ = sock.recvfrom(1024)
-                    
+
                 except Exception as e:
                     print("Tape integrity compromised")
                     sock.sendto("FIX".encode(), broadcast_address)
@@ -394,6 +385,7 @@ class ChatServer:
         print("Shutting tape integrity check off")
 
     def fix_tape(self):
+        """Attempt to repair the ring by checking neighbors and promoting backups when needed."""
         self.crisis = True
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(0.1)
@@ -401,20 +393,21 @@ class ChatServer:
                 try:
                     sock.sendto(f"PING", (self.successor, 12346))
                     _, _ = sock.recvfrom(1024)
-                except Exception as e:
+                except Exception:
                     self.fix_tape_forward()
             time.sleep(0.1 * 3 * FAIL_TOLERANCE)
             if self.predecessor:
                 try:
                     sock.sendto(f"PING", (self.predecessor, 12346))
                     _, _ = sock.recvfrom(1024)
-                except Exception as e:
+                except Exception:
                     self.fix_tape_backward()
         self.print_info()
         self.crisis = False
 
                 
     def fix_tape_forward(self):
+        """Select a new successor from backup successors when the current successor fails."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(0.1)
             for successor in self.successors:
@@ -437,40 +430,37 @@ class ChatServer:
             self.successors = []
 
     def fix_tape_backward(self):
+        """Handle predecessor failure by instructing it to terminate and clearing predecessor state."""
         if self.predecessor:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.settimeout(0.5)
                 try:
                     sock.sendto(f"PING".encode(), (self.predecessor, 12346))
                     _, _ = sock.recvfrom(1024)
-                except Exception as e:
+                except Exception:
                     sock.sendto(f"KILL".encode(), (self.predecessor, 12345))
                     self.lower_bound = 0
                     self.predecessor = None
 
 
     def correct_bd(self):
-        # while self.running:
-        #     if self.crisis:
-        #         time.sleep(1)
-        #         continue
+        """Move users that do not belong to this node's range to the correct nodes."""
         with self.db_lock:
             alien_users = self.db_manager.get_alien_users(self.lower_bound, self.upper_bound, self.rolling_hash)
         for user in alien_users:
             with self.db_lock:
                 self.register_user('.', '.', user[0], user[1], user[2])
                 self.db_manager.delete_user(user[0])
-            # time.sleep(1)
 
 
     def replics_manager(self):
+        """Maintain a set of replicator servers that hold copies of this node's user data."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             while self.running:
                 if self.crisis:
                     time.sleep(1)
                     continue
                 new_replics_needed = FAIL_TOLERANCE + 1 - len(self.replics)
-                # print(f"Replics needed: {new_replics_needed}")
                 replics = self.replics.copy()
                 for replic in replics:
                     if not self.ping(replic): 
@@ -493,10 +483,11 @@ class ChatServer:
 
 
     def find_new_replics(self, needed, actual_replics):
+        """Return a list of `needed` server IPs chosen as new replicators (excluding this node)."""
         servers = self.ping_all_servers()
         if not servers:
             return []
-        
+
         try:
             servers.remove(self.get_ip())
         except Exception:
@@ -514,11 +505,8 @@ class ChatServer:
 
 
     def replicants_manager(self):
+        """Assimilate data from replicant nodes that become unavailable (one-shot)."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            # while self.running:
-            #     if self.crisis:
-            #         time.sleep(1)
-            #         continue
             for replicant in self.replicants:
                 if not self.ping(replicant):
                     with self.db_lock:
@@ -529,10 +517,10 @@ class ChatServer:
                     with self.db_lock:
                         self.db_manager.drop_replics(replicant)
                     print(f"Asimilated data from {replicant}")
-            # time.sleep(1)
 
 
     def info_updater(self):
+        """Periodically print server info for monitoring."""
         while self.running:
             self.print_info()
             time.sleep(10)
@@ -541,20 +529,23 @@ class ChatServer:
     #region Utils
 
     def get_ip(self):
+        """Return the IP address of the current host."""
         return socket.gethostbyname(socket.gethostname())
     
 
     def ping(self, ip, timeout=0.1):
+        """Return True if `ip` responds to a short UDP PING within `timeout` seconds."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(timeout)
             try:
                 sock.sendto(b"PING", (ip, 12346))
                 _, _ = sock.recvfrom(1024)
                 return True
-            except Exception as e:
+            except Exception:
                 return False
             
     def ping_all_servers(self, timeout=0.1):
+        """Broadcast a PING and collect responding server IPs."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(timeout)
             servers = []
@@ -572,12 +563,14 @@ class ChatServer:
 
 
     def print_info(self):
+        """Print a short status line describing the server state."""
         print(f"Server '{self.name}' on ({self.get_ip()}:12345). Storing in range ({self.lower_bound}, {self.upper_bound}). Predecessor is {self.predecessor}, successor is {self.successor}")
         print(f"Successors: {self.successors}")
         print(f"Replics: {self.replics}")
         print(f"Replicants: {self.replicants}")
 
     def rolling_hash(self, s: str, base=911382629, mod=HASH_MOD) -> int:   
+        """Compute a rolling hash for string `s` used to distribute keys in the ring."""
         hash_value = 0
         for c in s:
             hash_value = (hash_value * base + ord(c)) % mod
@@ -587,10 +580,7 @@ class ChatServer:
 
     # region Multicast Stuff
     def multicast_listener(self) -> None:
-        """
-        Function that listens for multicast requests.
-        When it receives the DISCOVER_SERVER message, it responds with its IP address.
-        """
+        """Listen for multicast discovery messages and reply with this server's IP."""
         MCAST_GRP = "224.0.0.1"
         MCAST_PORT = 10003
         DISCOVER_MSG = "DISCOVER_SERVER"
@@ -627,57 +617,6 @@ class ChatServer:
             except Exception as e:
                 print(f"Error en el listener: {e}")
                 time.sleep(1)
-
-
-    # def discover_servers(self, timeout: str = 1) -> list:
-    #     """
-    #     Sends a multicast request to discover servers and waits for responses.
-
-    #     :param timeout: Maximum time (in seconds) to wait for responses.
-    #     :return: List of IPs of the discovered servers.
-    #     """
-    #     MCAST_GRP = "224.0.0.1"
-    #     MCAST_PORT = 10003
-    #     MESSAGE = "DISCOVER_SERVER"
-    #     BUFFER_SIZE = 1024
-
-    #     # Crear socket UDP para enviar y recibir
-    #     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    #     sock.settimeout(timeout)
-
-    #     # Configurar TTL del paquete multicast
-    #     ttl = struct.pack("b", 1)
-    #     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
-
-    #     # Enviar la petición multicast
-    #     try:
-    #         sock.sendto(MESSAGE.encode(), (MCAST_GRP, MCAST_PORT))
-    #     except Exception as e:
-    #         print(f"Error enviando el mensaje multicast: {e}")
-    #         return []
-
-    #     servers = []
-    #     start_time = time.time()
-    #     while True:
-    #         try:
-    #             data, addr = sock.recvfrom(BUFFER_SIZE)
-    #             server_ip = data.decode().strip()
-    #             servers.append(server_ip)
-    #             print(f"Servidor descubierto: {server_ip}")
-    #         except socket.timeout:
-    #             break
-    #         except Exception as e:
-    #             print(f"Error recibiendo datos: {e}")
-    #             break
-    #         if time.time() - start_time > timeout:
-    #             break
-
-    #     sock.close()
-
-    #     print(f"Servers descubiertos con multicast: {servers}")
-
-    #     return [("main", server) for server in servers]
-
 
 
 

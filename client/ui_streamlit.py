@@ -1,3 +1,7 @@
+"""Streamlit based UI for Spark Chat.
+
+Provides simple views to select a server, register and interact with chats.
+"""
 # import streamlit as st
 # import time
 # import client
@@ -160,8 +164,8 @@ if 'last_update' not in st.session_state:
     st.session_state.last_update = 0
 
 def discover_servers():
+    """Return a list of discovered servers or an empty list on error."""
     try:
-        # servers = st.session_state.chat_client.discover_servers()
         servers = st.session_state.chat_client.discover_servers()
         return servers
     except Exception as e:
@@ -169,6 +173,7 @@ def discover_servers():
         return []
 
 def register_user(username):
+    """Register `username` using the session chat client and return the result."""
     return st.session_state.chat_client.register_user(username)
 
 def render_server_selection():
