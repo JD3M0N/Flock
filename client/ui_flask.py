@@ -95,8 +95,8 @@ def handle_load_chats():
 @socketio.on('load_chat_history')
 def handle_load_history(data):
     contact = data['contact']
-    messages = chat.load_chat(contact)
     chat.db.set_messages_as_seen(chat.username, contact)
+    messages = chat.load_chat(contact)
     result = [{'id': m[0], 'author': m[1], 'receiver': m[2],
                'text': m[3], 'date': m[4]} for m in messages]
     emit('chat_history', result)
