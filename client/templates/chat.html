@@ -1,18 +1,27 @@
 {% extends "base.html" %}
+{% block title %}Flock | Chat{% endblock %}
 {% block content %}
-<div class="container" style="padding-bottom: 80px;">
-    <a href="/chats" class="back-link">&larr; Back to chats</a>
-    <h2 style="margin-bottom: 16px;">{{ contact }}</h2>
+<a href="/chats" class="back-link">← Volver a conversaciones</a>
+
+<section class="panel panel-strong chat-shell">
+    <header class="chat-header">
+        <div>
+            <div class="hero-kicker">Canal privado</div>
+            <h2 class="section-title" style="margin-top: 6px; margin-bottom: 4px;">@{{ contact }}</h2>
+            <p class="muted">Mensajeria directa con persistencia local y envio P2P.</p>
+        </div>
+        <div class="pill pill-accent">E2E activo</div>
+    </header>
 
     <div class="messages-area" id="messages"></div>
-</div>
 
-<div class="chat-input-area">
-    <form onsubmit="sendMsg(event)">
-        <input type="text" id="msgInput" placeholder="Type a message..." autocomplete="off" autofocus>
-        <button class="btn" type="submit">Send</button>
+    <form class="composer" id="composer">
+        <textarea class="textarea" id="msgInput" placeholder="Escribe tu mensaje..." autocomplete="off"></textarea>
+        <button class="btn btn-primary" type="submit" id="sendBtn">Enviar</button>
     </form>
-</div>
+</section>
+
+<div id="feedback" class="status hidden" style="margin-top: 14px;"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -21,17 +30,67 @@
     const username = "{{ username }}";
     const contact = "{{ contact }}";
     const messagesDiv = document.getElementById('messages');
+    const input = document.getElementById('msgInput');
+    const sendBtn = document.getElementById('sendBtn');
+
+    socket.on('request_error', ({error}) => showFeedback(error, true));
+    socket.on('auth_required', ({redirect}) => { window.location.href = redirect || '/register'; });
+
+    socket.on('chat_history', function(messages) {
+        messagesDiv.innerHTML = '';
+        messages.forEach(function(message) {
+            addMessage(message.author, message.text, message.date);
+        });
+        scrollToBottom();
+    });
+
+    socket.on('new_message', function(data) {
+        if (data.sender !== contact) return;
+        addMessage(data.sender, data.text, '');
+        scrollToBottom();
+        socket.emit('mark_seen', withCsrf({contact}));
+    });
+
+    socket.on('message_sent', function(data) {
+        if (data.contact !== contact) return;
+        addMessage(username, data.text, '');
+        input.value = '';
+        input.style.height = '56px';
+        sendBtn.disabled = false;
+        scrollToBottom();
+    });
+
+    document.getElementById('composer').addEventListener('submit', function(event) {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        sendBtn.disabled = true;
+        socket.emit('send_message', withCsrf({contact, text}));
+    });
+
+    input.addEventListener('input', function() {
+        input.style.height = '56px';
+        input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+    });
 
     function addMessage(author, text, date) {
         const div = document.createElement('div');
         div.className = 'message ' + (author === username ? 'message-own' : 'message-other');
-        div.innerHTML = '<div>' + escapeHtml(text) + '</div>' +
-            (date ? '<div class="message-date">' + date + '</div>' : '');
+        div.innerHTML =
+            '<div>' + escapeHtml(text) + '</div>' +
+            (date ? '<div class="message-date">' + escapeHtml(date) + '</div>' : '');
         messagesDiv.appendChild(div);
     }
 
     function scrollToBottom() {
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function showFeedback(message, isError = false) {
+        const feedback = document.getElementById('feedback');
+        sendBtn.disabled = false;
+        feedback.className = 'status' + (isError ? ' status-error' : '');
+        feedback.textContent = message;
     }
 
     function escapeHtml(text) {
@@ -40,39 +99,7 @@
         return div.innerHTML;
     }
 
-    socket.emit('load_chat_history', {contact: contact});
-    socket.emit('mark_seen', {contact: contact});
-
-    socket.on('chat_history', function(messages) {
-        messagesDiv.innerHTML = '';
-        messages.forEach(function(m) {
-            addMessage(m.author, m.text, m.date);
-        });
-        scrollToBottom();
-    });
-
-    socket.on('new_message', function(data) {
-        if (data.sender === contact) {
-            addMessage(data.sender, data.text, '');
-            scrollToBottom();
-            socket.emit('mark_seen', {contact: contact});
-        }
-    });
-
-    socket.on('message_sent', function(data) {
-        if (data.contact === contact) {
-            addMessage(username, data.text, '');
-            scrollToBottom();
-        }
-    });
-
-    function sendMsg(e) {
-        e.preventDefault();
-        const input = document.getElementById('msgInput');
-        const text = input.value.trim();
-        if (!text) return;
-        socket.emit('send_message', {contact: contact, text: text});
-        input.value = '';
-    }
+    socket.emit('load_chat_history', withCsrf({contact}));
+    socket.emit('mark_seen', withCsrf({contact}));
 </script>
 {% endblock %}

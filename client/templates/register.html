@@ -1,54 +1,124 @@
 {% extends "base.html" %}
+{% block title %}Flock | Acceso Seguro{% endblock %}
 {% block content %}
-<div class="container">
-    <h1>Flock</h1>
-    <div class="card">
-        <h2>Choose your username</h2>
-        <form onsubmit="registerUser(event)">
-            <input type="text" id="username" placeholder="Username (no spaces or hyphens)" maxlength="20" autofocus>
-            <button class="btn" type="submit" id="regBtn">Register</button>
-        </form>
-        <div id="error" class="status hidden" style="color: #ef4444;"></div>
-        <div id="status" class="status hidden"></div>
+<section class="hero panel">
+    <div class="hero-kicker">Secure Access</div>
+    <h2 class="hero-title">Desbloquea tu identidad local.</h2>
+    <p class="hero-text">
+        La contraseña protege tus claves privadas en este dispositivo. El servidor distribuido solo ve tu nombre y tu presencia en la red.
+    </p>
+</section>
+
+<section class="grid grid-2">
+    <div class="panel panel-strong">
+        <div class="card">
+            <h3 class="section-title">Acceso unico</h3>
+            <p class="section-copy">
+                Escribe tu usuario y contraseña. Si ya existe un perfil local, entraras. Si no existe, se creara automaticamente con esa contraseña.
+            </p>
+            <form id="authForm">
+                <div class="field">
+                    <label for="username">Nombre de usuario</label>
+                    <input class="input" type="text" id="username" maxlength="20" autocomplete="username" value="{{ suggested_username }}" autofocus>
+                </div>
+                <div class="field">
+                    <label for="password">Contraseña</label>
+                    <input class="input" type="password" id="password" minlength="8" autocomplete="current-password" placeholder="Minimo 8 caracteres">
+                </div>
+                <div class="btn-row">
+                    <button class="btn btn-primary" id="loginBtn" type="submit">Entrar o crear cuenta</button>
+                </div>
+            </form>
+            <div id="feedback" class="status hidden"></div>
+            <p class="footer-note" id="modeNote">
+                {% if has_profile %}
+                Se detecto un perfil local existente para este usuario en este dispositivo.
+                {% else %}
+                Si el perfil no existe todavia, esta contraseña se usara para crearlo y cifrar tu clave privada.
+                {% endif %}
+            </p>
+        </div>
     </div>
-</div>
+
+    <aside class="metrics">
+        <div class="metric">
+            <div class="metric-label">Proteccion local</div>
+            <div class="metric-value">PBKDF2 + clave privada cifrada</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Mensajeria</div>
+            <div class="metric-value">RSA 2048 + AES GCM</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Sesion</div>
+            <div class="metric-value">Flask + SocketIO endurecido</div>
+        </div>
+    </aside>
+</section>
 {% endblock %}
 
 {% block scripts %}
 <script>
-    const socket = io();
+    const localProfiles = new Set({{ local_profiles|tojson }});
+    const usernameInput = document.getElementById('username');
 
-    function registerUser(e) {
-        e.preventDefault();
+    document.getElementById('authForm').addEventListener('submit', async function(event) {
+        event.preventDefault();
         const username = document.getElementById('username').value.trim();
-        const error = document.getElementById('error');
-        const status = document.getElementById('status');
+        const password = document.getElementById('password').value;
+        const button = document.getElementById('loginBtn');
 
-        error.classList.add('hidden');
+        button.disabled = true;
+        showFeedback('<span class="spinner"></span> Procesando acceso seguro...', false, false, true);
 
-        if (!username || username.includes(' ') || username.includes('-')) {
-            error.textContent = 'Invalid username. No spaces or hyphens allowed.';
-            error.classList.remove('hidden');
+        try {
+            const response = await fetch('/auth', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(withCsrf({username, password}))
+            });
+            const payload = await response.json();
+            if (!response.ok || !payload.ok) {
+                throw new Error(payload.error || 'Authentication failed.');
+            }
+            showFeedback('Sesion iniciada correctamente.', false, true);
+            window.setTimeout(() => { window.location.href = '/chats'; }, 250);
+        } catch (error) {
+            showFeedback(error.message || 'Authentication failed.', true);
+        }
+    });
+
+    usernameInput.addEventListener('input', syncProfileHint);
+
+    function showFeedback(message, isError = false, isSuccess = false, keepDisabled = false) {
+        const feedback = document.getElementById('feedback');
+        const button = document.getElementById('loginBtn');
+        button.disabled = keepDisabled;
+
+        if (!message) {
+            feedback.className = 'status hidden';
+            feedback.textContent = '';
+            feedback.innerHTML = '';
             return;
         }
 
-        document.getElementById('regBtn').disabled = true;
-        status.innerHTML = '<span class="spinner"></span> Registering...';
-        status.classList.remove('hidden');
-        socket.emit('register_user', {username: username});
+        feedback.className = 'status';
+        if (isError) {
+            feedback.classList.add('status-error');
+            feedback.textContent = message;
+        } else {
+            if (isSuccess) feedback.classList.add('status-success');
+            feedback.innerHTML = message;
+        }
     }
 
-    socket.on('registered', function(data) {
-        window.location.href = '/chats';
-    });
+    function syncProfileHint() {
+        const exists = localProfiles.has(usernameInput.value.trim());
+        document.getElementById('modeNote').textContent = exists
+            ? 'Se encontro un perfil local para este usuario. Se intentara iniciar sesion.'
+            : 'No existe un perfil local todavia. Se creara automaticamente al continuar.';
+    }
 
-    socket.on('register_error', function(data) {
-        const error = document.getElementById('error');
-        const status = document.getElementById('status');
-        document.getElementById('regBtn').disabled = false;
-        status.classList.add('hidden');
-        error.textContent = data.error;
-        error.classList.remove('hidden');
-    });
+    syncProfileHint();
 </script>
 {% endblock %}

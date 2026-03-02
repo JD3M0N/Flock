@@ -1,19 +1,46 @@
 {% extends "base.html" %}
+{% block title %}Flock | Conversaciones{% endblock %}
 {% block content %}
-<div class="container">
-    <h1>Flock</h1>
-    <h2 style="text-align:center; margin-bottom:20px;">Welcome, {{ username }}</h2>
-
-    <div id="chatList"></div>
-
-    <div class="card" style="margin-top: 16px;">
-        <h2>New chat</h2>
-        <form onsubmit="startNewChat(event)">
-            <input type="text" id="newContact" placeholder="Enter username..." autofocus>
-            <button class="btn" type="submit">Start chat</button>
+<section class="hero panel">
+    <div class="hero-kicker">Inbox</div>
+    <h2 class="hero-title">Tus chats viven fuera de un servidor central.</h2>
+    <p class="hero-text">
+        El nodo solo resuelve presencia. Los mensajes viajan entre clientes y tu historial queda persistido localmente.
+    </p>
+    <div class="btn-row">
+        <form action="/logout" method="post">
+            <button class="btn btn-danger" type="submit">Cerrar sesion</button>
         </form>
     </div>
-</div>
+</section>
+
+<section class="grid grid-2">
+    <div class="panel panel-strong">
+        <div class="card">
+            <h3 class="section-title">Conversaciones activas</h3>
+            <p class="section-copy">Entradas ordenadas por la actividad mas reciente y con resumen de mensajes no leidos.</p>
+            <div id="chatList" class="chat-list"></div>
+            <div id="feedback" class="status hidden"></div>
+        </div>
+    </div>
+
+    <aside class="panel">
+        <div class="card">
+            <h3 class="section-title">Abrir nuevo chat</h3>
+            <p class="section-copy">Escribe el usuario remoto sin arroba. Si existe en la red, el cliente resolvera su direccion al enviar.</p>
+            <form id="newChatForm">
+                <div class="field">
+                    <label for="newContact">Usuario</label>
+                    <input class="input" type="text" id="newContact" placeholder="ejemplo_usuario" autocomplete="off">
+                </div>
+                <div class="btn-row">
+                    <button class="btn btn-primary" type="submit">Entrar al chat</button>
+                </div>
+            </form>
+            <p class="footer-note">Conectado como <strong>{{ username }}</strong>.</p>
+        </div>
+    </aside>
+</section>
 {% endblock %}
 
 {% block scripts %}
@@ -21,52 +48,65 @@
     const socket = io();
     const username = "{{ username }}";
 
-    function loadChats() {
-        socket.emit('load_chats');
-    }
+    socket.on('request_error', ({error}) => showFeedback(error, true));
+    socket.on('auth_required', ({redirect}) => { window.location.href = redirect || '/register'; });
+    socket.on('new_message', function() { loadChats(); });
 
     socket.on('chats_loaded', function(chats) {
         const list = document.getElementById('chatList');
+        const feedback = document.getElementById('feedback');
+        list.innerHTML = '';
+
         if (chats.length === 0) {
-            list.innerHTML = '<div class="status">No chats yet. Start a new one below.</div>';
+            feedback.className = 'status';
+            feedback.textContent = 'Todavia no hay conversaciones. Abre la primera desde el panel lateral.';
             return;
         }
 
-        list.innerHTML = '';
-        chats.forEach(function(c) {
+        feedback.className = 'status hidden';
+        chats.forEach(function(chat) {
             const item = document.createElement('a');
             item.className = 'chat-item';
-            item.href = '/chat/' + c.contact;
+            item.href = '/chat/' + encodeURIComponent(chat.contact);
 
-            let badge = '';
-            if (c.unread > 0) {
-                badge = '<div class="badge">' + c.unread + '</div>';
-            }
-
-            const preview = c.last_message.length > 40
-                ? c.last_message.substring(0, 40) + '...'
-                : c.last_message;
+            const preview = (chat.last_message || '').length > 70
+                ? chat.last_message.slice(0, 70) + '...'
+                : (chat.last_message || 'Sin mensajes');
 
             item.innerHTML =
-                '<div class="chat-info">' +
-                    '<div class="chat-name">' + c.contact + '</div>' +
-                    '<div class="chat-preview">' + preview + '</div>' +
-                '</div>' + badge;
-
+                '<div>' +
+                    '<div class="chat-name">@' + escapeHtml(chat.contact) + '</div>' +
+                    '<div class="chat-preview">' + escapeHtml(preview) + '</div>' +
+                '</div>' +
+                (chat.unread > 0 ? '<div class="badge">' + chat.unread + '</div>' : '<div class="pill">Abrir</div>');
             list.appendChild(item);
         });
     });
 
-    socket.on('new_message', function(data) {
-        loadChats();
+    document.getElementById('newChatForm').addEventListener('submit', function(event) {
+        event.preventDefault();
+        const contact = document.getElementById('newContact').value.trim().replace(/^@/, '');
+        if (!contact || contact === username) {
+            showFeedback('Introduce un contacto valido distinto a tu propio usuario.', true);
+            return;
+        }
+        window.location.href = '/chat/' + encodeURIComponent(contact);
     });
 
-    function startNewChat(e) {
-        e.preventDefault();
-        const contact = document.getElementById('newContact').value.trim().replace('@', '');
-        if (contact && contact !== username) {
-            window.location.href = '/chat/' + contact;
-        }
+    function loadChats() {
+        socket.emit('load_chats', withCsrf({}));
+    }
+
+    function showFeedback(message, isError = false) {
+        const feedback = document.getElementById('feedback');
+        feedback.className = 'status' + (isError ? ' status-error' : '');
+        feedback.textContent = message;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     loadChats();

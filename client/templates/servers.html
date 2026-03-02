@@ -1,63 +1,108 @@
 {% extends "base.html" %}
+{% block title %}Flock | Nodos{% endblock %}
 {% block content %}
-<div class="container">
-    <h1>Flock</h1>
-    <div class="card">
-        <h2>Connect to a server</h2>
-        <button class="btn" id="discoverBtn" onclick="discover()">
-            Search for servers
-        </button>
-        <div id="status" class="status hidden"></div>
-        <div id="serverList" style="margin-top: 16px;"></div>
+<section class="hero panel">
+    <div class="hero-kicker">Cluster Discovery</div>
+    <h2 class="hero-title">Conecta tu cliente con el anillo activo.</h2>
+    <p class="hero-text">
+        Busca nodos disponibles en la red local, selecciona uno y prepara el acceso seguro al cliente web.
+    </p>
+</section>
+
+<section class="grid grid-2">
+    <div class="panel panel-strong">
+        <div class="card">
+            <h3 class="section-title">Seleccion de servidor</h3>
+            <p class="section-copy">
+                Flock necesita un nodo inicial para registrar presencia, resolver usuarios y mantener el estado distribuido.
+            </p>
+            <div class="btn-row">
+                <button class="btn btn-primary" id="discoverBtn" type="button" onclick="discover()">
+                    Buscar servidores
+                </button>
+            </div>
+            <div id="status" class="status hidden"></div>
+            <div id="serverList" class="server-list" style="margin-top: 18px;"></div>
+        </div>
     </div>
-</div>
+
+    <aside class="metrics">
+        <div class="metric">
+            <div class="metric-label">Descubrimiento</div>
+            <div class="metric-value">UDP Broadcast</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Topologia</div>
+            <div class="metric-value">Anillo tolerante a fallos</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Siguiente paso</div>
+            <div class="metric-value">Login local con cifrado</div>
+        </div>
+    </aside>
+</section>
 {% endblock %}
 
 {% block scripts %}
 <script>
     const socket = io();
 
+    socket.on('request_error', ({error}) => showStatus(error, true));
+
+    function showStatus(message, isError = false) {
+        const status = document.getElementById('status');
+        status.textContent = message;
+        status.className = 'status' + (isError ? ' status-error' : '');
+    }
+
     function discover() {
         const btn = document.getElementById('discoverBtn');
         const status = document.getElementById('status');
-        btn.disabled = true;
-        status.classList.remove('hidden');
-        status.innerHTML = '<span class="spinner"></span> Searching...';
         document.getElementById('serverList').innerHTML = '';
-        socket.emit('discover_servers');
+        btn.disabled = true;
+        status.className = 'status';
+        status.innerHTML = '<span class="spinner"></span> Buscando nodos en la red...';
+        socket.emit('discover_servers', withCsrf({}));
     }
 
     socket.on('servers_found', function(servers) {
         const btn = document.getElementById('discoverBtn');
-        const status = document.getElementById('status');
         const list = document.getElementById('serverList');
         btn.disabled = false;
+        list.innerHTML = '';
 
         if (servers.length === 0) {
-            status.textContent = 'No servers found. Try again.';
+            showStatus('No se encontraron nodos activos. Intenta de nuevo.', true);
             return;
         }
 
-        status.classList.add('hidden');
-        list.innerHTML = '';
-        servers.forEach(function(s) {
-            const item = document.createElement('div');
+        showStatus(`Se detectaron ${servers.length} nodo(s) disponibles.`);
+        servers.forEach(function(server) {
+            const item = document.createElement('button');
+            item.type = 'button';
             item.className = 'server-item';
-            item.innerHTML = '<div><strong>' + s.name + '</strong><br><small style="color:#6b7280">' + s.ip + '</small></div>';
-            item.onclick = function() { connectServer(s); };
+            item.innerHTML =
+                '<div>' +
+                    '<div class="server-name">' + escapeHtml(server.name) + '</div>' +
+                    '<div class="server-meta">' + escapeHtml(server.ip) + '</div>' +
+                '</div>' +
+                '<div class="pill pill-accent">Conectar</div>';
+            item.onclick = function() {
+                showStatus('Conectando con el nodo seleccionado...');
+                socket.emit('connect_server', withCsrf(server));
+            };
             list.appendChild(item);
         });
     });
 
-    function connectServer(server) {
-        const status = document.getElementById('status');
-        status.classList.remove('hidden');
-        status.innerHTML = '<span class="spinner"></span> Connecting...';
-        socket.emit('connect_server', server);
-    }
-
-    socket.on('server_connected', function(data) {
+    socket.on('server_connected', function() {
         window.location.href = '/register';
     });
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
 </script>
 {% endblock %}

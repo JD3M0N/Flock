@@ -13,8 +13,9 @@ class CryptoManager:
     Keys are stored on disk under `client/keys/<username>/` and peer public
     keys are kept in a `contacts` subfolder.
     """
-    def __init__(self, username):
+    def __init__(self, username, password=None):
         self.username = username
+        self.password = password.encode("utf-8") if password else None
         self.key_dir = os.path.join(KEYS_DIR, username)
         self.contacts_dir = os.path.join(self.key_dir, "contacts")
         os.makedirs(self.contacts_dir, exist_ok=True)
@@ -27,7 +28,17 @@ class CryptoManager:
 
         if os.path.exists(priv_path) and os.path.exists(pub_path):
             with open(priv_path, "rb") as f:
-                private_key = serialization.load_pem_private_key(f.read(), password=None)
+                private_pem = f.read()
+            try:
+                private_key = serialization.load_pem_private_key(
+                    private_pem,
+                    password=self.password,
+                )
+            except TypeError:
+                # Legacy keys were stored unencrypted; transparently migrate them.
+                private_key = serialization.load_pem_private_key(private_pem, password=None)
+                if self.password:
+                    self._persist_private_key(private_key, priv_path)
             with open(pub_path, "rb") as f:
                 public_key = serialization.load_pem_public_key(f.read())
         else:
@@ -37,18 +48,26 @@ class CryptoManager:
             )
             public_key = private_key.public_key()
             os.makedirs(self.key_dir, exist_ok=True)
-            with open(priv_path, "wb") as f:
-                f.write(private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.NoEncryption()
-                ))
+            self._persist_private_key(private_key, priv_path)
             with open(pub_path, "wb") as f:
                 f.write(public_key.public_bytes(
                     encoding=serialization.Encoding.PEM,
                     format=serialization.PublicFormat.SubjectPublicKeyInfo
                 ))
         return private_key, public_key
+
+    def _persist_private_key(self, private_key, priv_path):
+        encryption = (
+            serialization.BestAvailableEncryption(self.password)
+            if self.password
+            else serialization.NoEncryption()
+        )
+        with open(priv_path, "wb") as f:
+            f.write(private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=encryption
+            ))
 
     def get_public_key_b64(self):
         """Return the local public key encoded in base64 (PEM format)."""

@@ -7,39 +7,53 @@ class server_db:
         self.db_directory = "server/db"
         self.db_route = ""
 
+    def _connect(self):
+        if not self.db_route:
+            raise RuntimeError("Server database is not initialized")
+        conn = sqlite3.connect(self.db_route, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
 
     def set_db(self, username):     
         os.makedirs(self.db_directory, exist_ok=True)
         self.db_route = os.path.join(self.db_directory, f"{username}.db")
 
-        conn = sqlite3.connect(self.db_route, check_same_thread=False)
-        cursor = conn.cursor()
+        with self._connect() as conn:
+            cursor = conn.cursor()
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                ip TEXT NOT NULL,
-                port INTEGER NOT NULL
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    ip TEXT NOT NULL,
+                    port INTEGER NOT NULL
+                )
+            ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS replic_users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                ip TEXT NOT NULL,
-                port INTEGER NOT NULL,
-                owner TEXT NOT NULL
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS replic_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    ip TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    owner TEXT NOT NULL
+                )
+            ''')
 
-        conn.commit()
-        conn.close()
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_users_username
+                ON users(username)
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_replic_users_owner
+                ON replic_users(owner)
+            ''')
 
 
     def register_user(self, username, ip, port):
-        with sqlite3.connect(self.db_route, check_same_thread=False) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             # Verificar si el usuario ya existe
@@ -64,7 +78,7 @@ class server_db:
             conn.commit()
         
     def register_replic_user(self, username, ip, port, owner):
-        with sqlite3.connect(self.db_route, check_same_thread=False) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             # Verificar si el usuario ya existe
@@ -89,7 +103,7 @@ class server_db:
             conn.commit()
         
     def resolve_user(self, username):
-        with sqlite3.connect(self.db_route, check_same_thread=False) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -101,7 +115,7 @@ class server_db:
         
 
     def get_bd_copy(self):
-        with sqlite3.connect(self.db_route, check_same_thread=False) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -113,7 +127,7 @@ class server_db:
 
 
     def get_alien_users(self, lower_bound, upper_bound, hash_function):
-        with sqlite3.connect(self.db_route, check_same_thread=False) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -130,7 +144,7 @@ class server_db:
             return alien_users
         
     def delete_user(self, username):
-        with sqlite3.connect(self.db_route, check_same_thread=False) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -140,7 +154,7 @@ class server_db:
             conn.commit()
 
     def drop_replics(self, owner):
-        with sqlite3.connect(self.db_route, check_same_thread=False) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -150,7 +164,7 @@ class server_db:
             conn.commit()
 
     def get_replics(self, owner):
-        with sqlite3.connect(self.db_route, check_same_thread=False) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cursor.execute('''
