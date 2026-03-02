@@ -5,6 +5,9 @@ import json
 import time
 import db_manager
 import struct
+import hashlib
+import hmac
+import secrets
 
 
 class chat_client:
@@ -31,6 +34,8 @@ class chat_client:
 
         self.crypto = None
         self.pending_key_exchanges = {}
+        self.background_started = False
+        self.auth_directory = "client/auth"
 
         self.db = db_manager.user_db()
 
@@ -43,13 +48,63 @@ class chat_client:
             time.sleep(3)
 
 
-    def set_user(self, username):
+    def _credentials_path(self, username):
+        os.makedirs(self.auth_directory, exist_ok=True)
+        return os.path.join(self.auth_directory, f"{username}.json")
+
+    def has_local_profile(self, username):
+        return os.path.exists(self._credentials_path(username))
+
+    def list_local_profiles(self):
+        if not os.path.isdir(self.auth_directory):
+            return []
+        profiles = []
+        for entry in os.listdir(self.auth_directory):
+            if entry.endswith(".json"):
+                profiles.append(entry[:-5])
+        return sorted(profiles)
+
+    def _hash_password(self, password, salt):
+        return hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            200_000,
+        )
+
+    def create_local_profile(self, username, password):
+        if self.has_local_profile(username):
+            raise ValueError("Local profile already exists")
+
+        salt = secrets.token_bytes(16)
+        password_hash = self._hash_password(password, salt)
+        profile = {
+            "username": username,
+            "salt": salt.hex(),
+            "password_hash": password_hash.hex(),
+        }
+        with open(self._credentials_path(username), "w", encoding="utf-8") as handle:
+            json.dump(profile, handle)
+
+    def authenticate_local_profile(self, username, password):
+        if not self.has_local_profile(username):
+            return False
+
+        with open(self._credentials_path(username), "r", encoding="utf-8") as handle:
+            profile = json.load(handle)
+
+        salt = bytes.fromhex(profile["salt"])
+        expected = bytes.fromhex(profile["password_hash"])
+        current = self._hash_password(password, salt)
+        return hmac.compare_digest(current, expected)
+
+    def set_user(self, username, password=None):
         """Configure client for `username`, initialize DB and crypto, start background threads."""
         self.username = username
         self.db.set_db(username)
         try:
             import crypto_manager
-            self.crypto = crypto_manager.CryptoManager(username)
+            self.crypto = crypto_manager.CryptoManager(username, password=password)
         except Exception as e:
             print(f"Crypto not available: {e}")
             self.crypto = None
@@ -162,20 +217,57 @@ class chat_client:
         self.pending_key_exchanges.pop(recipient, None)
         return success
         
-    def register_user(self, username):
-        """Register `username` on the server and, on success, configure local user state."""
+    def _register_remote_user(self, username):
         try:
             message_ip = self.get_ip()
             _, message_port = self.message_socket.getsockname()
             response = self.send_command(f"REGISTER {username} {message_ip} {message_port}")
             print(response)
-            if response.startswith("OK"):
-                self.set_user(username)
-                return True
-            return False
+            return response.startswith("OK")
         except Exception as e:
             print(f"Registration error: {e}")
             return False
+
+    def register_user(self, username, password):
+        """Create a protected local profile and register the username on the server."""
+        if self.has_local_profile(username):
+            return False, "This username already exists on this device. Use login instead."
+
+        try:
+            self.create_local_profile(username, password)
+            self.set_user(username, password=password)
+        except Exception as e:
+            return False, f"Unable to initialize secure profile: {e}"
+
+        if self._register_remote_user(username):
+            return True, None
+
+        self.username = None
+        self.crypto = None
+        return False, "Unable to register on the selected server."
+
+    def login_user(self, username, password):
+        """Unlock an existing local profile and refresh presence on the server."""
+        if not self.authenticate_local_profile(username, password):
+            return False, "Invalid credentials"
+
+        try:
+            self.set_user(username, password=password)
+        except Exception:
+            return False, "Unable to unlock local encryption keys"
+
+        if self._register_remote_user(username):
+            return True, None
+
+        self.username = None
+        self.crypto = None
+        return False, "Unable to refresh your connection with the server."
+
+    def authenticate_user(self, username, password):
+        """Log in with an existing local profile or create one on first access."""
+        if self.has_local_profile(username):
+            return self.login_user(username, password)
+        return self.register_user(username, password)
 
     def discover_servers(self):
         """Discover servers on the local network using UDP broadcast."""
@@ -303,13 +395,21 @@ class chat_client:
 
     def get_ip(self):
         """Return the IP address of the local host name."""
-        return socket.gethostbyname(socket.gethostname())
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect(("8.8.8.8", 80))
+                return sock.getsockname()[0]
+        except Exception:
+            return socket.gethostbyname(socket.gethostname())
 
     def run_background(self):
         """Start background threads for message receiving, pending delivery and reconnection."""
+        if self.background_started:
+            return
         threading.Thread(target=self.listen_for_messages, daemon=True).start()
         threading.Thread(target=self.send_pending_messages, daemon=True).start()
         threading.Thread(target=self.server_auto_reconnect, daemon=True).start()
+        self.background_started = True
         time.sleep(1)
 
 

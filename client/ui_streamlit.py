@@ -172,9 +172,9 @@ def discover_servers():
         st.error(f"Error discovering servers: {e}")
         return []
 
-def register_user(username):
-    """Register `username` using the session chat client and return the result."""
-    return st.session_state.chat_client.register_user(username)
+def register_user(username, password):
+    """Register or login `username` using the session chat client and return the result."""
+    return st.session_state.chat_client.authenticate_user(username, password)
 
 def render_server_selection():
     st.title("✨ Spark Chat - Server Selection")
@@ -196,16 +196,21 @@ def render_server_selection():
 def render_registration():
     st.title("✨ Spark Chat - Registration")
     username = st.text_input("Choose your username", max_chars=20)
+    password = st.text_input("Password", type="password")
     
     if st.button("Register"):
         if not username or ' ' in username or '-' in username:
             st.error("Invalid username. No spaces or hyphens allowed.")
-        elif register_user(username):
-            st.session_state.username = username
-            st.session_state.current_view = 'main_menu'
-            st.experimental_rerun()
+        elif len(password) < 8:
+            st.error("Password must contain at least 8 characters.")
         else:
-            st.error("Username already taken")
+            success, error = register_user(username, password)
+            if success:
+                st.session_state.username = username
+                st.session_state.current_view = 'main_menu'
+                st.experimental_rerun()
+            else:
+                st.error(error or "Authentication failed")
 
 
 def render_main_menu():

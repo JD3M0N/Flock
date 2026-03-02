@@ -2,6 +2,7 @@ import client
 import time
 import os
 import threading
+import getpass
 
 class console_app:
     """Console-based UI for interacting with a `chat_client` instance."""
@@ -115,9 +116,12 @@ class console_app:
                 if " " in username or not username or '-' in username:
                     print("Username cannot contain spaces, hyphens or be empty.")
                     continue
-                message_ip, message_port = self.chat_client.message_socket.getsockname()
-                response = self.chat_client.register_user(username)
-                if response:
+                password = getpass.getpass("Password: ").strip()
+                if len(password) < 8:
+                    print("Password must contain at least 8 characters.")
+                    continue
+                success, _ = self.chat_client.authenticate_user(username, password)
+                if success:
                     return "OK"
                 else:
                     return "NOT OK"
@@ -198,6 +202,4 @@ class console_app:
 if __name__ == "__main__":
     app = console_app()
     app.run_ui()
-
-
 
