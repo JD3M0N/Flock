@@ -52,6 +52,22 @@ class ChatServer:
         self.running = True
         self.crisis = False
 
+    def is_valid_username(self, username):
+        return (
+            isinstance(username, str)
+            and 3 <= len(username) <= 20
+            and "-" not in username
+            and not any(char.isspace() for char in username)
+            and username.replace("_", "").isalnum()
+        )
+
+    def is_valid_client_address(self, ip, port):
+        try:
+            socket.inet_aton(ip)
+            return 0 < int(port) <= 65535
+        except Exception:
+            return False
+
 
     
     #region Start Sequence 
@@ -289,6 +305,13 @@ class ChatServer:
         If the user's hash belongs to this node's range, persist it locally and notify replicas.
         Otherwise forward the REGISTER command to predecessor or successor.
         """
+        if not self.is_valid_username(username) or not self.is_valid_client_address(ip, port):
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                if answer_to_ip != ".":
+                    sock.sendto(b"ERROR Invalid registration payload", (answer_to_ip, answer_to_port))
+            logger.warning(f"Rejected invalid REGISTER payload for username='{username}' ip='{ip}' port='{port}'")
+            return
+
         username_hash = self.rolling_hash(username)
 
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -491,7 +514,7 @@ class ChatServer:
                     if not self.ping(replic): 
                         new_replics_needed += 1
                         replics.remove(replic)
-                        sock.sendto(b"DROP_REPLIC", (replic, 12345))
+                        sock.sendto(f"DROP_REPLICS {self.get_ip()}".encode(), (replic, 12345))
                 if new_replics_needed > 0:            
                     new_replics = self.find_new_replics(new_replics_needed, replics)
                     if new_replics:
