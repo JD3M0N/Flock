@@ -59,6 +59,7 @@ instance/
 .env
 .env.*
 venv/
+.venv/
 env/
 venv.bak/
 ENV/
@@ -103,4 +104,3 @@ node_modules/
 *.bak
 *~
 *.swp
-
