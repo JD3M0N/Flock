@@ -4,7 +4,7 @@ import os
 class server_db:
     """Server-side simple SQLite storage for user registration and replication info."""
     def __init__(self):
-        self.db_directory = "server/db"
+        self.db_directory = os.path.join(os.path.dirname(__file__), "db")
         self.db_route = ""
 
     def _connect(self):

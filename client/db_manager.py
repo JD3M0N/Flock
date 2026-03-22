@@ -8,7 +8,7 @@ class user_db:
     Manages a per-user database file containing chats and messages.
     """
     def __init__(self):
-        self.db_directory = "client/chats"
+        self.db_directory = os.path.join(os.path.dirname(__file__), "chats")
         self.db_route = ""
         self._db_lock = threading.RLock()
 

@@ -9,6 +9,11 @@ import hashlib
 import hmac
 import secrets
 
+from logging_utils import configure_logger
+
+
+logger = configure_logger("flock.client", "client.log")
+
 
 class chat_client:
     """Client-side chat manager handling server discovery, messaging and local storage."""
@@ -35,7 +40,7 @@ class chat_client:
         self.crypto = None
         self.pending_key_exchanges = {}
         self.background_started = False
-        self.auth_directory = "client/auth"
+        self.auth_directory = os.path.join(os.path.dirname(__file__), "auth")
 
         self.db = db_manager.user_db()
 
@@ -43,8 +48,14 @@ class chat_client:
         """Background loop that attempts reconnect when server is marked down."""
         while self.running:
             if self.server_down:
+                logger.warning("Active server marked as down; attempting auto-reconnect")
                 if self.auto_connect():
                     self.server_down = False
+                    logger.info(
+                        "Client reconnected to server '%s' at %s",
+                        self.server_name,
+                        self.server_address,
+                    )
             time.sleep(3)
 
 
@@ -85,6 +96,7 @@ class chat_client:
         }
         with open(self._credentials_path(username), "w", encoding="utf-8") as handle:
             json.dump(profile, handle)
+        logger.info("Created local profile for user '%s'", username)
 
     def authenticate_local_profile(self, username, password):
         if not self.has_local_profile(username):
@@ -106,9 +118,10 @@ class chat_client:
             import crypto_manager
             self.crypto = crypto_manager.CryptoManager(username, password=password)
         except Exception as e:
-            print(f"Crypto not available: {e}")
+            logger.warning("Crypto not available for user '%s': %s", username, e)
             self.crypto = None
         self.run_background()
+        logger.info("Client session initialized for user '%s'", username)
 
 
     def read_response(self, socket):
@@ -131,9 +144,11 @@ class chat_client:
         try:
             self.client_socket.sendto(f"{command}".encode(), self.server_address)
             response, _ = self.read_response(self.client_socket)
+            logger.info("Command sent to server %s: %s", self.server_address, command)
             return response
         except Exception as e:
             self.server_down = True
+            logger.error("Communication with server %s failed: %s", self.server_address, e)
             return f"ERROR in communication with server: {e}"
 
     def send_message(self, recipient, message):
@@ -145,6 +160,7 @@ class chat_client:
 
         if recipient == self.username:
             self.db.insert_new_message(self.username, recipient, text, True)
+            logger.info("Stored loopback message for '%s'", recipient)
             return True
 
         try:
@@ -153,6 +169,7 @@ class chat_client:
                 address = self.resolve_user(recipient)
 
             if not address:
+                logger.warning("Unable to resolve recipient '%s'", recipient)
                 return False
 
             if self.crypto:
@@ -167,16 +184,24 @@ class chat_client:
             if self.is_user_online(address):
                 self.db.insert_new_message(self.username, recipient, text, True)
                 self.message_socket.sendto(wire_message.encode(), address)
+                logger.info("Message from '%s' delivered to '%s' at %s", sender, recipient, address)
                 return True
             else:
                 address = self.resolve_user(recipient)
                 if address and self.is_user_online(address):
                     self.db.insert_new_message(self.username, recipient, text, True)
                     self.message_socket.sendto(wire_message.encode(), address)
+                    logger.info(
+                        "Message from '%s' delivered to '%s' after refresh at %s",
+                        sender,
+                        recipient,
+                        address,
+                    )
                     return True
+                logger.warning("Recipient '%s' is offline; message queued", recipient)
                 return False
         except Exception as e:
-            print(f"ERROR sending message: {e}")
+            logger.error("Error sending message to '%s': %s", recipient, e)
             return False
 
     def add_to_pending_list(self, recipient, message):
@@ -186,6 +211,11 @@ class chat_client:
                 self.pending_list[recipient].append(message)
             else:
                 self.pending_list[recipient] = [message]
+            logger.info(
+                "Queued pending message for '%s'. Pending count=%s",
+                recipient,
+                len(self.pending_list[recipient]),
+            )
 
     def resolve_user(self, username):
         """Ask server to resolve `username` and cache the result locally."""
@@ -193,8 +223,10 @@ class chat_client:
         if response.startswith("OK"):
             _, ip, port = response.split()
             self.contact_list[username] = (ip, int(port))
+            logger.info("Resolved user '%s' to %s:%s", username, ip, port)
             return (ip, int(port))
         else:
+            logger.warning("Resolve failed for user '%s': %s", username, response)
             return None
 
     def ensure_peer_key(self, recipient, timeout=5):
@@ -212,9 +244,14 @@ class chat_client:
         self.pending_key_exchanges[recipient] = event
         request = f"PUBKEY_REQ {self.username}"
         self.message_socket.sendto(request.encode(), address)
+        logger.info("Requested public key for peer '%s'", recipient)
 
         success = event.wait(timeout=timeout)
         self.pending_key_exchanges.pop(recipient, None)
+        if success:
+            logger.info("Received public key for peer '%s'", recipient)
+        else:
+            logger.warning("Timed out waiting for public key from '%s'", recipient)
         return success
         
     def _register_remote_user(self, username):
@@ -222,10 +259,10 @@ class chat_client:
             message_ip = self.get_ip()
             _, message_port = self.message_socket.getsockname()
             response = self.send_command(f"REGISTER {username} {message_ip} {message_port}")
-            print(response)
+            logger.info("Remote register response for '%s': %s", username, response)
             return response.startswith("OK")
         except Exception as e:
-            print(f"Registration error: {e}")
+            logger.error("Registration error for '%s': %s", username, e)
             return False
 
     def register_user(self, username, password):
@@ -240,10 +277,12 @@ class chat_client:
             return False, f"Unable to initialize secure profile: {e}"
 
         if self._register_remote_user(username):
+            logger.info("User '%s' registered locally and remotely", username)
             return True, None
 
         self.username = None
         self.crypto = None
+        logger.error("Remote registration failed for '%s'", username)
         return False, "Unable to register on the selected server."
 
     def login_user(self, username, password):
@@ -257,10 +296,12 @@ class chat_client:
             return False, "Unable to unlock local encryption keys"
 
         if self._register_remote_user(username):
+            logger.info("User '%s' logged in and presence refreshed", username)
             return True, None
 
         self.username = None
         self.crypto = None
+        logger.error("Unable to refresh remote presence for '%s'", username)
         return False, "Unable to refresh your connection with the server."
 
     def authenticate_user(self, username, password):
@@ -284,6 +325,8 @@ class chat_client:
         except socket.timeout:
             pass
 
+        logger.info("Broadcast discovery found %s server(s)", len(servers))
+
         return servers
 
     def connect_to_server(self, server):
@@ -291,6 +334,7 @@ class chat_client:
         try:
             self.server_address = (server[1], 12345)
             self.server_name = server[0]
+            logger.info("Connected to server '%s' at %s", self.server_name, self.server_address)
         except Exception as e:
             return f"ERROR connecting with server: {e}"
         
@@ -298,6 +342,7 @@ class chat_client:
         """Try to auto-connect to the first discovered server. Returns True on success."""
         servers = self.discover_servers()
         if len(servers) == 0:
+            logger.warning("Auto-connect could not find any server")
             return False
 
         self.connect_to_server(servers[0])
@@ -328,6 +373,7 @@ class chat_client:
 
                     self.db.insert_new_message(sender, self.username, text, False)
                     self.contact_list[sender] = address
+                    logger.info("Received message from '%s' at %s", sender, address)
 
                     if self.on_message_received:
                         try:
@@ -341,6 +387,7 @@ class chat_client:
                         response = f"PUBKEY_RES {self.username} {self.crypto.get_public_key_b64()}"
                         self.message_socket.sendto(response.encode(), address)
                         self.contact_list[requester] = address
+                        logger.info("Shared public key with '%s'", requester)
                         if not self.crypto.has_peer_key(requester):
                             req = f"PUBKEY_REQ {self.username}"
                             self.message_socket.sendto(req.encode(), address)
@@ -350,6 +397,7 @@ class chat_client:
                     if self.crypto:
                         self.crypto.store_peer_key(peer_username, b64_key)
                         self.contact_list[peer_username] = address
+                        logger.info("Stored peer key for '%s'", peer_username)
                         event = self.pending_key_exchanges.get(peer_username)
                         if event:
                             event.set()
@@ -385,12 +433,13 @@ class chat_client:
                     with self.pending_lock:
                         while self.send_message(username, self.pending_list[username][0]):
                             self.pending_list[username].pop(0)
+                            logger.info("Delivered pending message to '%s'", username)
                             if len(self.pending_list[username]) == 0:
                                 del self.pending_list[username]
                                 break
                 time.sleep(1)
             except Exception as e:
-                print(f"Error sending pending messages: {e}")
+                logger.error("Error sending pending messages: %s", e)
                 pass
 
     def get_ip(self):
@@ -411,6 +460,7 @@ class chat_client:
         threading.Thread(target=self.server_auto_reconnect, daemon=True).start()
         self.background_started = True
         time.sleep(1)
+        logger.info("Background client workers started")
 
 
     def discover_servers_multicast(self, timeout: int = 3) -> list:
@@ -432,7 +482,7 @@ class chat_client:
         try:
             sock.sendto(MESSAGE.encode(), (MCAST_GRP, MCAST_PORT))
         except Exception as e:
-            print(f"Error enviando el mensaje multicast: {e}")
+            logger.error("Error sending multicast discovery: %s", e)
             return []
 
         # helper debug removed
@@ -444,11 +494,11 @@ class chat_client:
                 data, addr = sock.recvfrom(BUFFER_SIZE)
                 server_ip = data.decode().strip()
                 servers.append(server_ip)
-                print(f"Servidor descubierto: {server_ip} (respuesta desde {addr})")
+                logger.info("Multicast discovery received server %s from %s", server_ip, addr)
             except socket.timeout:
                 break
             except Exception as e:
-                print(f"Error recibiendo datos: {e}")
+                logger.error("Error receiving multicast discovery data: %s", e)
                 break
             if time.time() - start_time > timeout:
                 break
@@ -456,6 +506,7 @@ class chat_client:
         sock.close()
 
         servers = [("main", server) for server in servers]
+        logger.info("Multicast discovery found %s server(s)", len(servers))
 
         return servers
 

@@ -5,20 +5,17 @@ import json
 import db_manager
 import time
 import random
+import os
 # from termcolor import colored as col
 import struct
-import logging
+from logging_utils import configure_logger
 
-# Configure basic logging to console
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s:%(name)s: %(message)s",
-)
-logger = logging.getLogger(__name__)
+
+logger = configure_logger("flock.server", "server.log")
 
 
 HASH_MOD = 10**18+3
-FAIL_TOLERANCE = 3
+FAIL_TOLERANCE = int(os.environ.get("FLOCK_FAIL_TOLERANCE", "3"))
 
 
 class ChatServer:
@@ -51,6 +48,11 @@ class ChatServer:
 
         self.running = True
         self.crisis = False
+        logger.info(
+            "ChatServer '%s' initialized with fail tolerance %s",
+            self.name,
+            FAIL_TOLERANCE,
+        )
 
     def is_valid_username(self, username):
         return (
@@ -98,6 +100,7 @@ class ChatServer:
         threading.Thread(target=self.info_updater, daemon=True).start()
         threading.Thread(target=self.multicast_listener, daemon=True).start()
 
+        logger.info("Server '%s' started background services", self.name)
         self.listen_for_messages()
 
 
@@ -118,11 +121,13 @@ class ChatServer:
             except socket.timeout:
                 pass
 
+            logger.info("Broadcast discovery found %s peer server(s)", len(servers))
             return servers
 
     def join_to_servers(self, servers):
         """Join the cluster by requesting to join the server that manages the largest range."""
         longest_range_server = self.get_longest_range_server(servers)
+        logger.info("Joining cluster through server %s", longest_range_server)
         self.request_join(longest_range_server)
 
     def get_longest_range_server(self, servers):
@@ -164,6 +169,13 @@ class ChatServer:
                     self.successor = successor
                 else:
                     self.successor = None
+                logger.info(
+                    "Join completed. Range=(%s, %s) predecessor=%s successor=%s",
+                    self.lower_bound,
+                    self.upper_bound,
+                    self.predecessor,
+                    self.successor,
+                )
             else:
                 logger.error(f"Joining request failed: {response}") 
                 raise ValueError
@@ -297,6 +309,7 @@ class ChatServer:
     def change_predecessor(self, predecessor):
         """Update the predecessor pointer for this node."""
         self.predecessor = predecessor
+        logger.info("Predecessor updated to %s", predecessor)
 
 
     def register_user(self, answer_to_ip, answer_to_port, username, ip, port):
@@ -336,6 +349,7 @@ class ChatServer:
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
                 for replic in self.replics:
                     sock.sendto(f"REPLIC {username} {ip} {port}".encode(), (replic, 12345))
+                    logger.info("Replicated user '%s' to backup server %s", username, replic)
                 logger.info(response)
 
 
@@ -386,6 +400,13 @@ class ChatServer:
 
         self.upper_bound = joinee_lower_bound - 1
         self.successor = joinee[0]
+        logger.info(
+            "Processed join for %s. New local range=(%s, %s), successor=%s",
+            joinee[0],
+            self.lower_bound,
+            self.upper_bound,
+            self.successor,
+        )
 
     def request_predecessor_change(self, target, new_predecessor):
         """Notify `target` server that its predecessor should be changed to `new_predecessor`."""
@@ -393,6 +414,7 @@ class ChatServer:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.settimeout(1)
                 sock.sendto(f"PRED_CHANGE {new_predecessor}".encode(), (target, 12345))
+            logger.info("Requested predecessor change on %s -> %s", target, new_predecessor)
 
 
 
@@ -427,6 +449,7 @@ class ChatServer:
                 except Exception as e:
                     logger.warning("Tape integrity compromised")
                     sock.sendto("FIX".encode(), broadcast_address)
+                    logger.warning("Broadcasted FIX to the cluster")
 
             time.sleep(1)
 
@@ -470,12 +493,14 @@ class ChatServer:
                     self.upper_bound = int(lower_bound) - 1
                     self.request_predecessor_change(successor, self.get_ip())
                     self.successor = successor
+                    logger.info("Promoted backup successor %s", successor)
                     return
                 except Exception as e:
                     logger.warning(f"Server {successor} unavailable: {e}")
             self.upper_bound = HASH_MOD - 1
             self.successor = None
             self.successors = []
+            logger.warning("No live successor found; node now owns tail of ring")
 
     def fix_tape_backward(self):
         """Handle predecessor failure by instructing it to terminate and clearing predecessor state."""
@@ -489,6 +514,7 @@ class ChatServer:
                     sock.sendto(f"KILL".encode(), (self.predecessor, 12345))
                     self.lower_bound = 0
                     self.predecessor = None
+                    logger.warning("Predecessor removed after failed health check")
 
 
     def correct_bd(self):
@@ -499,6 +525,7 @@ class ChatServer:
             with self.db_lock:
                 self.register_user('.', '.', user[0], user[1], user[2])
                 self.db_manager.delete_user(user[0])
+            logger.info("Moved alien user '%s' to the correct server", user[0])
 
 
     def replics_manager(self):
@@ -515,6 +542,7 @@ class ChatServer:
                         new_replics_needed += 1
                         replics.remove(replic)
                         sock.sendto(f"DROP_REPLICS {self.get_ip()}".encode(), (replic, 12345))
+                        logger.warning("Replication target %s removed after ping failure", replic)
                 if new_replics_needed > 0:            
                     new_replics = self.find_new_replics(new_replics_needed, replics)
                     if new_replics:
@@ -527,6 +555,7 @@ class ChatServer:
                     for user in user_info:
                         for replic in new_replics:
                             sock.sendto(f"REPLIC {user[0]} {user[1]} {user[2]}".encode(), (replic, 12345))
+                            logger.info("Replicated existing user '%s' to %s", user[0], replic)
                 time.sleep(1)
 
 
