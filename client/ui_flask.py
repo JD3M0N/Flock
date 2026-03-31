@@ -252,9 +252,11 @@ def handle_send(data):
         emit("request_error", {"error": "Message exceeds the 4000 character limit."})
         return
     message = f"MESSAGE {chat.username} {text}"
+    queued = False
     if not chat.send_message(contact, message):
         chat.add_to_pending_list(contact, message)
-    emit("message_sent", {"contact": contact, "text": text})
+        queued = True
+    emit("message_sent", {"contact": contact, "text": text, "queued": queued})
 
 
 @socketio.on("mark_seen")

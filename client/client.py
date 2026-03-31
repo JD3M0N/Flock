@@ -3,6 +3,7 @@ import threading
 import os
 import json
 import time
+import shutil
 import db_manager
 import struct
 import hashlib
@@ -98,6 +99,17 @@ class chat_client:
             json.dump(profile, handle)
         logger.info("Created local profile for user '%s'", username)
 
+    def delete_local_profile(self, username):
+        """Remove a partially created local profile and key material."""
+        credentials_path = self._credentials_path(username)
+        if os.path.exists(credentials_path):
+            os.remove(credentials_path)
+
+        keys_path = os.path.join(os.path.dirname(__file__), "keys", username)
+        if os.path.isdir(keys_path):
+            shutil.rmtree(keys_path)
+        logger.info("Deleted local profile for user '%s'", username)
+
     def authenticate_local_profile(self, username, password):
         if not self.has_local_profile(username):
             return False
@@ -114,14 +126,29 @@ class chat_client:
         """Configure client for `username`, initialize DB and crypto, start background threads."""
         self.username = username
         self.db.set_db(username)
-        try:
-            import crypto_manager
-            self.crypto = crypto_manager.CryptoManager(username, password=password)
-        except Exception as e:
-            logger.warning("Crypto not available for user '%s': %s", username, e)
-            self.crypto = None
+        import crypto_manager
+        self.crypto = crypto_manager.CryptoManager(username, password=password)
+        self._load_pending_messages()
         self.run_background()
         logger.info("Client session initialized for user '%s'", username)
+
+    def _load_pending_messages(self):
+        """Hydrate the in-memory pending queue from persistent storage."""
+        pending = {}
+        for _, recipient, payload in self.db.get_pending_messages():
+            pending.setdefault(recipient, []).append(payload)
+        with self.pending_lock:
+            self.pending_list = pending
+
+    def _remove_pending_cache_item(self, recipient, payload):
+        with self.pending_lock:
+            messages = self.pending_list.get(recipient, [])
+            for index, queued_payload in enumerate(messages):
+                if queued_payload == payload:
+                    messages.pop(index)
+                    break
+            if not messages and recipient in self.pending_list:
+                del self.pending_list[recipient]
 
 
     def read_response(self, socket):
@@ -172,14 +199,12 @@ class chat_client:
                 logger.warning("Unable to resolve recipient '%s'", recipient)
                 return False
 
-            if self.crypto:
-                self.ensure_peer_key(recipient)
+            if not self.ensure_peer_key(recipient):
+                logger.warning("Unable to obtain trusted key for '%s'", recipient)
+                return False
 
-            if self.crypto and self.crypto.has_peer_key(recipient):
-                encrypted_text = self.crypto.encrypt_message(recipient, text)
-                wire_message = f"MESSAGE {sender} {encrypted_text}"
-            else:
-                wire_message = message
+            encrypted_text = self.crypto.encrypt_message(recipient, text)
+            wire_message = f"MESSAGE {sender} {encrypted_text}"
 
             if self.is_user_online(address):
                 self.db.insert_new_message(self.username, recipient, text, True)
@@ -206,6 +231,7 @@ class chat_client:
 
     def add_to_pending_list(self, recipient, message):
         """Add a message to the pending queue for `recipient` (thread-safe)."""
+        self.db.add_pending_message(recipient, message)
         with self.pending_lock:
             if recipient in self.pending_list.keys():
                 self.pending_list[recipient].append(message)
@@ -221,8 +247,10 @@ class chat_client:
         """Ask server to resolve `username` and cache the result locally."""
         response = self.send_command(f"RESOLVE {username}")
         if response.startswith("OK"):
-            _, ip, port = response.split()
+            _, ip, port, public_key, _version = response.split(" ", 4)
             self.contact_list[username] = (ip, int(port))
+            if self.crypto and public_key:
+                self.crypto.store_peer_key(username, public_key)
             logger.info("Resolved user '%s' to %s:%s", username, ip, port)
             return (ip, int(port))
         else:
@@ -230,37 +258,48 @@ class chat_client:
             return None
 
     def ensure_peer_key(self, recipient, timeout=5):
-        """Ensure we have a stored peer key for `recipient`, requesting it if needed."""
-        if not self.crypto or self.crypto.has_peer_key(recipient):
+        """Ensure we have a trusted server-backed public key for `recipient`."""
+        if self.crypto.has_peer_key(recipient):
             return True
 
-        address = self.contact_list.get(recipient)
-        if not address:
-            address = self.resolve_user(recipient)
-        if not address:
-            return False
-
-        event = threading.Event()
-        self.pending_key_exchanges[recipient] = event
-        request = f"PUBKEY_REQ {self.username}"
-        self.message_socket.sendto(request.encode(), address)
-        logger.info("Requested public key for peer '%s'", recipient)
-
-        success = event.wait(timeout=timeout)
-        self.pending_key_exchanges.pop(recipient, None)
-        if success:
-            logger.info("Received public key for peer '%s'", recipient)
-        else:
-            logger.warning("Timed out waiting for public key from '%s'", recipient)
-        return success
+        return self.resolve_user(recipient) is not None
         
     def _register_remote_user(self, username):
         try:
             message_ip = self.get_ip()
             _, message_port = self.message_socket.getsockname()
-            response = self.send_command(f"REGISTER {username} {message_ip} {message_port}")
-            logger.info("Remote register response for '%s': %s", username, response)
-            return response.startswith("OK")
+            version = time.time_ns()
+            public_key = self.crypto.get_public_key_b64()
+            signed_payload = f"{username}|{message_ip}|{message_port}|{version}|{public_key}"
+            signature = self.crypto.sign_text(signed_payload)
+            command = (
+                f"REGISTER {username} {message_ip} {message_port} "
+                f"{version} {public_key} {signature}"
+            )
+
+            for attempt in range(2):
+                response = self.send_command(command)
+                logger.info(
+                    "Remote register response for '%s' (attempt %s): %s",
+                    username,
+                    attempt + 1,
+                    response,
+                )
+                if response.startswith("OK"):
+                    return True
+
+                # If the selected server just died, reconnect synchronously and retry once.
+                if self.server_down and attempt == 0 and self.auto_connect():
+                    self.server_down = False
+                    logger.warning(
+                        "Retrying remote registration for '%s' after reconnecting to %s",
+                        username,
+                        self.server_address,
+                    )
+                    continue
+                break
+
+            return False
         except Exception as e:
             logger.error("Registration error for '%s': %s", username, e)
             return False
@@ -282,6 +321,7 @@ class chat_client:
 
         self.username = None
         self.crypto = None
+        self.delete_local_profile(username)
         logger.error("Remote registration failed for '%s'", username)
         return False, "Unable to register on the selected server."
 
@@ -363,13 +403,18 @@ class chat_client:
                 if message.startswith("MESSAGE"):
                     _, sender, encrypted_text = message.split(" ", 2)
 
-                    if self.crypto and self.crypto.has_peer_key(sender):
-                        try:
-                            text = self.crypto.decrypt_message(encrypted_text)
-                        except Exception:
-                            text = encrypted_text
-                    else:
-                        text = encrypted_text
+                    if not self.crypto.has_peer_key(sender):
+                        self.resolve_user(sender)
+
+                    if not self.crypto.has_peer_key(sender):
+                        logger.warning("Dropped message from '%s' because no trusted key is available", sender)
+                        continue
+
+                    try:
+                        text = self.crypto.decrypt_message(encrypted_text)
+                    except Exception:
+                        logger.warning("Dropped undecryptable message from '%s'", sender)
+                        continue
 
                     self.db.insert_new_message(sender, self.username, text, False)
                     self.contact_list[sender] = address
@@ -395,12 +440,13 @@ class chat_client:
                 elif message.startswith("PUBKEY_RES"):
                     _, peer_username, b64_key = message.split(" ", 2)
                     if self.crypto:
-                        self.crypto.store_peer_key(peer_username, b64_key)
-                        self.contact_list[peer_username] = address
-                        logger.info("Stored peer key for '%s'", peer_username)
-                        event = self.pending_key_exchanges.get(peer_username)
-                        if event:
-                            event.set()
+                        resolved_address = self.resolve_user(peer_username)
+                        if resolved_address and self.crypto.has_peer_key(peer_username):
+                            self.contact_list[peer_username] = address
+                            logger.info("Validated peer key for '%s' against identity manager", peer_username)
+                            event = self.pending_key_exchanges.get(peer_username)
+                            if event:
+                                event.set()
 
                 elif message.startswith("PING"):
                     self.message_socket.sendto("PONG".encode(), address)
@@ -427,16 +473,11 @@ class chat_client:
         """Background worker that retries delivery of pending messages."""
         while self.running:
             try:
-                with self.pending_lock:
-                    pending_users = list(self.pending_list.keys())
-                for username in pending_users:
-                    with self.pending_lock:
-                        while self.send_message(username, self.pending_list[username][0]):
-                            self.pending_list[username].pop(0)
-                            logger.info("Delivered pending message to '%s'", username)
-                            if len(self.pending_list[username]) == 0:
-                                del self.pending_list[username]
-                                break
+                for message_id, username, payload in self.db.get_pending_messages():
+                    if self.send_message(username, payload):
+                        self.db.delete_pending_message(message_id)
+                        self._remove_pending_cache_item(username, payload)
+                        logger.info("Delivered pending message to '%s'", username)
                 time.sleep(1)
             except Exception as e:
                 logger.error("Error sending pending messages: %s", e)

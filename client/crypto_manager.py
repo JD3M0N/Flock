@@ -3,8 +3,10 @@ import base64
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidSignature
 
-KEYS_DIR = "client/keys"
+BASE_DIR = os.path.dirname(__file__)
+KEYS_DIR = os.path.join(BASE_DIR, "keys")
 
 
 class CryptoManager:
@@ -77,6 +79,18 @@ class CryptoManager:
         )
         return base64.b64encode(pem).decode()
 
+    def sign_text(self, text):
+        """Sign UTF-8 text with the local private key and return base64 signature."""
+        signature = self.private_key.sign(
+            text.encode("utf-8"),
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        return base64.b64encode(signature).decode()
+
     def store_peer_key(self, peer_username, b64_pubkey):
         """Store a peer's public key (base64 PEM) to the contacts folder."""
         pem = base64.b64decode(b64_pubkey)
@@ -95,6 +109,24 @@ class CryptoManager:
     def has_peer_key(self, peer_username):
         """Return True if a stored public key exists for `peer_username`."""
         return os.path.exists(os.path.join(self.contacts_dir, f"{peer_username}.pem"))
+
+    @staticmethod
+    def verify_signature_b64(b64_pubkey, text, b64_signature):
+        """Return True if `b64_signature` verifies `text` against `b64_pubkey`."""
+        try:
+            public_key = serialization.load_pem_public_key(base64.b64decode(b64_pubkey))
+            public_key.verify(
+                base64.b64decode(b64_signature),
+                text.encode("utf-8"),
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
+            return True
+        except (ValueError, TypeError, InvalidSignature):
+            return False
 
     def encrypt_message(self, peer_username, plaintext):
         """Encrypt `plaintext` for `peer_username` using hybrid RSA-AES (returns base64 payload)."""

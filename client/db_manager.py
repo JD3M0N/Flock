@@ -56,6 +56,20 @@ class user_db:
                 ON messages(receiver, author, seen, date_time)
             ''')
 
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS pending_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    recipient TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_pending_recipient
+                ON pending_messages(recipient, id)
+            ''')
+
     
     def insert_new_message(self, author, receiver, text, seen):
         """Insert a message record into the database."""
@@ -145,4 +159,61 @@ class user_db:
                 ORDER BY date_time DESC, id DESC
             '''
             cursor.execute(query, (user, user, user))
+            return cursor.fetchall()
+
+    def add_pending_message(self, recipient, payload):
+        """Persist a pending outgoing message for later retry."""
+        with self._db_lock, self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO pending_messages (recipient, payload) VALUES (?, ?)",
+                (recipient, payload),
+            )
+            return cursor.lastrowid
+
+    def get_pending_messages(self, recipient=None):
+        """Return pending messages ordered by insertion time."""
+        with self._db_lock, self._connect() as conn:
+            cursor = conn.cursor()
+            if recipient is None:
+                cursor.execute(
+                    '''
+                    SELECT id, recipient, payload
+                    FROM pending_messages
+                    ORDER BY id ASC
+                    '''
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT id, recipient, payload
+                    FROM pending_messages
+                    WHERE recipient = ?
+                    ORDER BY id ASC
+                    ''',
+                    (recipient,),
+                )
+            return cursor.fetchall()
+
+    def delete_pending_message(self, message_id):
+        """Delete a pending message once delivery succeeds."""
+        with self._db_lock, self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM pending_messages WHERE id = ?",
+                (message_id,),
+            )
+
+    def get_pending_resume(self):
+        """Return a list of (recipient, count) for pending outgoing messages."""
+        with self._db_lock, self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT recipient, COUNT(*)
+                FROM pending_messages
+                GROUP BY recipient
+                ORDER BY MIN(id) ASC
+                '''
+            )
             return cursor.fetchall()

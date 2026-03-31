@@ -57,6 +57,11 @@
         input.value = '';
         input.style.height = '56px';
         sendBtn.disabled = false;
+        if (data.queued) {
+            showFeedback('El contacto no estaba disponible. El mensaje quedo en cola local para reintento automatico.');
+        } else {
+            showFeedback('');
+        }
         scrollToBottom();
     });
 

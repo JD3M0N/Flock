@@ -28,6 +28,14 @@ class DummySocket:
         return None
 
 
+class DummyCrypto:
+    def __init__(self):
+        self.keys = {}
+
+    def store_peer_key(self, username, public_key):
+        self.keys[username] = public_key
+
+
 def build_client(tmp_path, monkeypatch):
     monkeypatch.setattr(client_module.socket, "socket", DummySocket)
     app_client = client_module.chat_client()
@@ -56,6 +64,7 @@ def test_local_profile_authentication(tmp_path, monkeypatch):
 def test_add_to_pending_list_groups_messages_per_recipient(tmp_path, monkeypatch):
     app_client = build_client(tmp_path, monkeypatch)
     try:
+        app_client.db.set_db("alice")
         app_client.add_to_pending_list("bob", "MESSAGE alice hi")
         app_client.add_to_pending_list("bob", "MESSAGE alice second")
 
@@ -84,9 +93,11 @@ def test_send_message_to_self_is_stored_locally(tmp_path, monkeypatch):
 def test_resolve_user_caches_successful_lookup(tmp_path, monkeypatch):
     app_client = build_client(tmp_path, monkeypatch)
     try:
-        app_client.send_command = lambda command: "OK 127.0.0.1 5555"
+        app_client.crypto = DummyCrypto()
+        app_client.send_command = lambda command: "OK 127.0.0.1 5555 public-key 9"
 
         assert app_client.resolve_user("bob") == ("127.0.0.1", 5555)
         assert app_client.contact_list["bob"] == ("127.0.0.1", 5555)
+        assert app_client.crypto.keys["bob"] == "public-key"
     finally:
         teardown_client(app_client)

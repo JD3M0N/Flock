@@ -39,3 +39,22 @@ def test_user_db_tracks_unseen_and_marks_seen(tmp_path):
 
     database.set_messages_as_seen("alice", "bob")
     assert database.get_unseen_messages("alice", "bob") == []
+
+
+def test_user_db_persists_pending_messages(tmp_path):
+    database = client_db_manager.user_db()
+    database.db_directory = str(tmp_path / "chats")
+    database.set_db("alice")
+
+    pending_id = database.add_pending_message("bob", "MESSAGE alice hi")
+    database.add_pending_message("bob", "MESSAGE alice second")
+
+    assert database.get_pending_resume() == [("bob", 2)]
+    assert [
+        row[2] for row in database.get_pending_messages("bob")
+    ] == ["MESSAGE alice hi", "MESSAGE alice second"]
+
+    database.delete_pending_message(pending_id)
+    assert [
+        row[2] for row in database.get_pending_messages("bob")
+    ] == ["MESSAGE alice second"]
