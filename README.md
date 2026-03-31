@@ -29,15 +29,15 @@ A decentralized peer-to-peer messaging system built on a Chord distributed hash 
 
 **Clients** register with any server (the request is routed to the correct node via the hash ring) and then communicate directly peer-to-peer over UDP. The server is only used for user discovery (`RESOLVE`), never for relaying messages.
 
-**Security** is handled entirely at the client level. Before the first message, clients perform a P2P RSA public key handshake. All subsequent messages are encrypted using hybrid RSA-2048 + AES-256-GCM encryption.
+**Security** is handled primarily at the client level, with the distributed identity layer binding usernames to long-lived public keys. Clients sign presence updates, resolve peer identity keys through the server ring, and encrypt all chat payloads using hybrid RSA-2048 + AES-256-GCM encryption.
 
 ## Features
 
 - **Decentralized topology** -- Chord DHT with consistent hashing (`mod 10¹⁸+3`)
 - **Fault tolerance** -- Configurable replication factor (default: 3+1 replicas), automatic ring repair on node failure
-- **End-to-end encryption** -- Hybrid RSA-2048-OAEP + AES-256-GCM, keys never touch the server
-- **P2P key exchange** -- `PUBKEY_REQ`/`PUBKEY_RES` handshake directly between clients
-- **Offline message queue** -- Messages to offline users are retried automatically in the background
+- **Identity-bound registration** -- Usernames are tied to a public key and presence updates are signed
+- **End-to-end encryption** -- Hybrid RSA-2048-OAEP + AES-256-GCM, private keys never touch the server
+- **Offline message queue** -- Messages to offline users are persisted locally and retried automatically in the background
 - **Real-time web UI** -- Flask + WebSocket (Socket.IO) with push notifications
 - **Console UI** -- Lightweight terminal interface for headless environments
 - **Auto-discovery** -- Servers and clients find each other via UDP broadcast or multicast
@@ -143,23 +143,24 @@ Commands: `@username` (open chat), `/back` (return to menu), `/quit` (exit).
 | `PRED_CHANGE` | Notification | `PRED_CHANGE <ip>` | Update predecessor |
 | `SUCC` | Push | `SUCC <ip> [<ip>...]` | Propagate successor list |
 | `FIX` | Broadcast | `FIX` | Trigger ring repair |
-| `REPLIC` | Push | `REPLIC <user> <ip> <port>` | Replicate user data |
+| `REPLIC` | Push | `REPLIC <user> <ip> <port> <version> <pubkey_b64>` | Replicate user data |
+| `TAKEOVER` | Push | `TAKEOVER <user> <ip> <port> <version> <pubkey_b64>` | Move an owned record to the correct node |
 | `DROP_REPLICS` | Push | `DROP_REPLICS <owner_ip>` | Drop replica data |
 
 ### Client-to-Server (UDP, port 12345)
 
 | Command | Format | Description |
 |---------|--------|-------------|
-| `REGISTER` | `REGISTER <username> <ip> <port>` | Register a user |
-| `RESOLVE` | `RESOLVE <username>` / `OK <ip> <port>` | Lookup user address |
+| `REGISTER` | `REGISTER <username> <ip> <port> <version> <pubkey_b64> <signature_b64>` | Register or refresh a user presence |
+| `RESOLVE` | `RESOLVE <username>` / `OK <ip> <port> <pubkey_b64> <version>` | Lookup user address and identity key |
 
 ### Client-to-Client (UDP, dynamic port)
 
 | Command | Format | Description |
 |---------|--------|-------------|
 | `MESSAGE` | `MESSAGE <sender> <encrypted_payload>` | Send a chat message |
-| `PUBKEY_REQ` | `PUBKEY_REQ <username>` | Request peer's public key |
-| `PUBKEY_RES` | `PUBKEY_RES <username> <base64_pubkey>` | Respond with public key |
+| `PUBKEY_REQ` | `PUBKEY_REQ <username>` | Legacy compatibility request for peer's public key |
+| `PUBKEY_RES` | `PUBKEY_RES <username> <base64_pubkey>` | Legacy compatibility response validated against the identity manager |
 | `PING`/`PONG` | `PING` / `PONG` | Online check |
 
 ## Security Model
@@ -188,21 +189,18 @@ Plaintext message
     Base64 encode ──► Wire format
 ```
 
-### Key Exchange (P2P Handshake)
+### Identity-Bound Registration
 
 ```
-Alice                                          Bob
-  │                                              │
-  ├── PUBKEY_REQ alice ─────────────────────────►│
-  │                                              ├── stores Alice's address
-  │◄─────────────────── PUBKEY_RES bob <key> ────┤
-  │                                              │
-  │  (if Bob doesn't have Alice's key yet)       │
-  │◄─────────────────── PUBKEY_REQ bob ──────────┤
-  ├── PUBKEY_RES alice <key> ───────────────────►│
-  │                                              │
-  ├── MESSAGE alice <encrypted> ────────────────►│
-  │◄──────────────── MESSAGE bob <encrypted> ────┤
+Alice                                        Identity ring
+  │                                                │
+  ├── REGISTER alice ip port version pubkey sig ─►│
+  │◄─────────────────────────────── OK / ERROR ────┤
+  │                                                │
+  ├── RESOLVE bob ────────────────────────────────►│
+  │◄──────────────── OK ip port bob_pubkey ver ───┤
+  │                                                │
+  ├── MESSAGE alice <encrypted> ─────────────────► Bob
 ```
 
 ### Key Storage
