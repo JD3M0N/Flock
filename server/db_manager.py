@@ -27,7 +27,9 @@ class server_db:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL UNIQUE,
                     ip TEXT NOT NULL,
-                    port INTEGER NOT NULL
+                    port INTEGER NOT NULL,
+                    public_key TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0
                 )
             ''')
 
@@ -37,6 +39,8 @@ class server_db:
                     username TEXT NOT NULL UNIQUE,
                     ip TEXT NOT NULL,
                     port INTEGER NOT NULL,
+                    public_key TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0,
                     owner TEXT NOT NULL
                 )
             ''')
@@ -51,65 +55,109 @@ class server_db:
                 ON replic_users(owner)
             ''')
 
+            self._ensure_column(cursor, "users", "public_key", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(cursor, "users", "version", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(cursor, "replic_users", "public_key", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(cursor, "replic_users", "version", "INTEGER NOT NULL DEFAULT 0")
 
-    def register_user(self, username, ip, port):
+    def _ensure_column(self, cursor, table_name, column_name, column_definition):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = {row[1] for row in cursor.fetchall()}
+        if column_name not in columns:
+            cursor.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+            )
+
+    def get_user_record(self, username):
         with self._connect() as conn:
             cursor = conn.cursor()
-            
-            # Verificar si el usuario ya existe
             cursor.execute('''
-                SELECT id FROM users WHERE username = ?
+                SELECT username, ip, port, public_key, version
+                FROM users
+                WHERE username = ?
             ''', (username,))
-            
-            existing_user = cursor.fetchone()
-            
-            if existing_user:
-                cursor.execute('''
-                    UPDATE users 
-                    SET ip = ?, port = ?
-                    WHERE username = ?
-                ''', (ip, port, username))
-            else:
-                cursor.execute('''
-                    INSERT INTO users (username, ip, port)
-                    VALUES (?, ?, ?)
-                ''', (username, ip, port))
+            return cursor.fetchone()
 
-            conn.commit()
-        
-    def register_replic_user(self, username, ip, port, owner):
+    def register_user(self, username, ip, port, public_key="", version=0):
         with self._connect() as conn:
             cursor = conn.cursor()
-            
-            # Verificar si el usuario ya existe
+
             cursor.execute('''
-                SELECT id FROM replic_users WHERE username = ?
+                SELECT ip, port, public_key, version
+                FROM users
+                WHERE username = ?
             ''', (username,))
-            
+
             existing_user = cursor.fetchone()
-            
+
             if existing_user:
+                existing_ip, existing_port, existing_public_key, existing_version = existing_user
+                if version < existing_version:
+                    return False
                 cursor.execute('''
-                    UPDATE replic_users 
-                    SET ip = ?, port = ?, owner = ?
+                    UPDATE users
+                    SET ip = ?, port = ?, public_key = ?, version = ?
                     WHERE username = ?
-                ''', (ip, port, owner, username))
+                ''', (
+                    ip,
+                    port,
+                    public_key or existing_public_key,
+                    version,
+                    username,
+                ))
             else:
                 cursor.execute('''
-                    INSERT INTO replic_users (username, ip, port, owner)
-                    VALUES (?, ?, ?, ?)
-                ''', (username, ip, port, owner))
+                    INSERT INTO users (username, ip, port, public_key, version)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (username, ip, port, public_key, version))
 
             conn.commit()
-        
+            return True
+
+    def register_replic_user(self, username, ip, port, public_key="", version=0, owner=""):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT ip, port, public_key, version, owner
+                FROM replic_users
+                WHERE username = ?
+            ''', (username,))
+
+            existing_user = cursor.fetchone()
+
+            if existing_user:
+                _, _, existing_public_key, existing_version, existing_owner = existing_user
+                if version < existing_version:
+                    return False
+                cursor.execute('''
+                    UPDATE replic_users
+                    SET ip = ?, port = ?, public_key = ?, version = ?, owner = ?
+                    WHERE username = ?
+                ''', (
+                    ip,
+                    port,
+                    public_key or existing_public_key,
+                    version,
+                    owner or existing_owner,
+                    username,
+                ))
+            else:
+                cursor.execute('''
+                    INSERT INTO replic_users (username, ip, port, public_key, version, owner)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (username, ip, port, public_key, version, owner))
+
+            conn.commit()
+            return True
+
     def resolve_user(self, username):
         with self._connect() as conn:
             cursor = conn.cursor()
-            
             cursor.execute('''
-                SELECT ip, port FROM users WHERE username = ?
+                SELECT ip, port, public_key, version
+                FROM users
+                WHERE username = ?
             ''', (username,))
-            
             address = cursor.fetchone()
             return address
         
@@ -117,9 +165,8 @@ class server_db:
     def get_bd_copy(self):
         with self._connect() as conn:
             cursor = conn.cursor()
-            
             cursor.execute('''
-                SELECT username, ip, port FROM users
+                SELECT username, ip, port, public_key, version FROM users
             ''')
 
             data = cursor.fetchall()
@@ -129,9 +176,8 @@ class server_db:
     def get_alien_users(self, lower_bound, upper_bound, hash_function):
         with self._connect() as conn:
             cursor = conn.cursor()
-            
             cursor.execute('''
-                SELECT username, ip, port FROM users
+                SELECT username, ip, port, public_key, version FROM users
             ''')
 
             data = cursor.fetchall()
@@ -166,9 +212,8 @@ class server_db:
     def get_replics(self, owner):
         with self._connect() as conn:
             cursor = conn.cursor()
-            
             cursor.execute('''
-                SELECT username, ip, port FROM replic_users WHERE owner = ?
+                SELECT username, ip, port, public_key, version FROM replic_users WHERE owner = ?
             ''', (owner,))
 
             data = cursor.fetchall()

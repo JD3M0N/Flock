@@ -6,9 +6,21 @@ import db_manager
 import time
 import random
 import os
+import base64
 # from termcolor import colored as col
 import struct
 from logging_utils import configure_logger
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.exceptions import InvalidSignature
+except ModuleNotFoundError:
+    hashes = None
+    serialization = None
+    padding = None
+
+    class InvalidSignature(Exception):
+        pass
 
 
 logger = configure_logger("flock.server", "server.log")
@@ -34,7 +46,7 @@ class ChatServer:
         self.ping_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         self.db_manager = db_manager.server_db()
-        self.db_lock = threading.Lock()
+        self.db_lock = threading.RLock()
 
         self.lower_bound = 0
         self.upper_bound = HASH_MOD - 1
@@ -234,14 +246,12 @@ class ChatServer:
                     self.print_info()
 
                 elif message.startswith("REGISTER"):
-                    try:
-                        _, answer_to_ip, answer_to_port, username, ip, port = message.split(" ")  
-                    except Exception:
-                        _, username, ip, port = message.split(" ")
-                        answer_to_ip = address[0]
-                        answer_to_port = address[1]
-                    self.register_user(answer_to_ip, int(answer_to_port), username, ip, int(port))
-                    logger.info(f"REGISTER request for user '{username}' handled/forwarded")
+                    payload = self.parse_register_message(message, address)
+                    if payload is None:
+                        logger.warning("Rejected malformed REGISTER payload from %s", address)
+                        continue
+                    self.register_user(**payload)
+                    logger.info("REGISTER request for user '%s' handled/forwarded", payload["username"])
 
                 elif message.startswith("RESOLVE"):
                     try:
@@ -269,12 +279,38 @@ class ChatServer:
                     self.crisis = False
 
                 elif message.startswith("REPLIC"):
-                    _, username, ip, port = message.split(" ")
+                    try:
+                        _, username, ip, port, version, public_key = message.split(" ", 5)
+                    except ValueError:
+                        logger.warning("Rejected malformed REPLIC payload from %s", address)
+                        continue
                     if address[0] not in self.replicants:
                         self.replicants.append(address[0])
                     with self.db_lock:
-                        self.db_manager.register_replic_user(username, ip, port, address[0])
+                        self.db_manager.register_replic_user(
+                            username,
+                            ip,
+                            int(port),
+                            public_key=public_key,
+                            version=int(version),
+                            owner=address[0],
+                        )
                     logger.info(f"Registered replic user '{username}' from {address[0]}")
+
+                elif message.startswith("TAKEOVER"):
+                    try:
+                        _, username, ip, port, version, public_key = message.split(" ", 5)
+                    except ValueError:
+                        logger.warning("Rejected malformed TAKEOVER payload from %s", address)
+                        continue
+                    self.place_user_record(
+                        username,
+                        ip,
+                        int(port),
+                        public_key,
+                        int(version),
+                    )
+                    logger.info("Accepted TAKEOVER for user '%s'", username)
 
                 elif message.startswith("DROP_REPLICS"):
                     _, owner = message.split(" ")
@@ -311,14 +347,90 @@ class ChatServer:
         self.predecessor = predecessor
         logger.info("Predecessor updated to %s", predecessor)
 
+    def parse_register_message(self, message, address):
+        parts = message.split(" ")
+        if len(parts) == 7:
+            _, username, ip, port, version, public_key, signature = parts
+            answer_to_ip, answer_to_port = address[0], address[1]
+        elif len(parts) == 9:
+            _, answer_to_ip, answer_to_port, username, ip, port, version, public_key, signature = parts
+        else:
+            return None
 
-    def register_user(self, answer_to_ip, answer_to_port, username, ip, port):
+        try:
+            return {
+                "answer_to_ip": answer_to_ip,
+                "answer_to_port": int(answer_to_port),
+                "username": username,
+                "ip": ip,
+                "port": int(port),
+                "version": int(version),
+                "public_key": public_key,
+                "signature": signature,
+            }
+        except (TypeError, ValueError):
+            return None
+
+    def registration_payload(self, username, ip, port, version, public_key):
+        return f"{username}|{ip}|{port}|{version}|{public_key}"
+
+    def verify_registration_signature(self, public_key, payload, signature):
+        if not all((serialization, padding, hashes)):
+            logger.error("cryptography dependency is not available; cannot verify registrations")
+            return False
+        try:
+            key = serialization.load_pem_public_key(base64.b64decode(public_key))
+            key.verify(
+                base64.b64decode(signature),
+                payload.encode(),
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
+            return True
+        except (ValueError, TypeError, InvalidSignature):
+            return False
+
+    def place_user_record(self, username, ip, port, public_key, version):
+        """Route an already authenticated user record to its owning node."""
+        username_hash = self.rolling_hash(username)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            if username_hash < self.lower_bound and self.predecessor:
+                sock.sendto(
+                    f"TAKEOVER {username} {ip} {port} {version} {public_key}".encode(),
+                    (self.predecessor, 12345),
+                )
+            elif username_hash > self.upper_bound and self.successor:
+                sock.sendto(
+                    f"TAKEOVER {username} {ip} {port} {version} {public_key}".encode(),
+                    (self.successor, 12345),
+                )
+            else:
+                with self.db_lock:
+                    self.db_manager.register_user(
+                        username,
+                        ip,
+                        port,
+                        public_key=public_key,
+                        version=version,
+                    )
+
+
+    def register_user(self, answer_to_ip, answer_to_port, username, ip, port, version, public_key, signature):
         """Register a user in the ring or forward the registration to the appropriate neighbor.
 
         If the user's hash belongs to this node's range, persist it locally and notify replicas.
         Otherwise forward the REGISTER command to predecessor or successor.
         """
-        if not self.is_valid_username(username) or not self.is_valid_client_address(ip, port):
+        if (
+            not self.is_valid_username(username)
+            or not self.is_valid_client_address(ip, port)
+            or not public_key
+            or not signature
+            or version <= 0
+        ):
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 if answer_to_ip != ".":
                     sock.sendto(b"ERROR Invalid registration payload", (answer_to_ip, answer_to_port))
@@ -326,29 +438,52 @@ class ChatServer:
             return
 
         username_hash = self.rolling_hash(username)
+        payload = self.registration_payload(username, ip, port, version, public_key)
 
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             if username_hash < self.lower_bound:
                 sock.sendto(
-                    f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port}".encode(),
+                    f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port} {version} {public_key} {signature}".encode(),
                     (self.predecessor, 12345),
                 )
                 logger.info(f"Forwarded REGISTER for '{username}' to predecessor {self.predecessor}")
 
             elif username_hash > self.upper_bound:
                 sock.sendto(
-                    f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port}".encode(),
+                    f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port} {version} {public_key} {signature}".encode(),
                     (self.successor, 12345),
                 )
                 logger.info(f"Forwarded REGISTER for '{username}' to successor {self.successor}")
             else:
                 with self.db_lock:
-                    self.db_manager.register_user(username, ip, port)
-                response = f"OK User '{username}' in ({ip}:{port}) successfully registered"
+                    existing_record = self.db_manager.get_user_record(username)
+                    stored_public_key = existing_record[3] if existing_record else public_key
+
+                    if existing_record and stored_public_key != public_key:
+                        response = "ERROR Username belongs to a different identity key"
+                    elif not self.verify_registration_signature(stored_public_key, payload, signature):
+                        response = "ERROR Invalid registration signature"
+                    elif not self.db_manager.register_user(
+                        username,
+                        ip,
+                        port,
+                        public_key=stored_public_key,
+                        version=version,
+                    ):
+                        response = "ERROR Stale registration version"
+                    else:
+                        response = f"OK User '{username}' in ({ip}:{port}) successfully registered"
+
                 if answer_to_ip != '.':
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
+                if not response.startswith("OK"):
+                    logger.warning(response)
+                    return
                 for replic in self.replics:
-                    sock.sendto(f"REPLIC {username} {ip} {port}".encode(), (replic, 12345))
+                    sock.sendto(
+                        f"REPLIC {username} {ip} {port} {version} {stored_public_key}".encode(),
+                        (replic, 12345),
+                    )
                     logger.info("Replicated user '%s' to backup server %s", username, replic)
                 logger.info(response)
 
@@ -376,8 +511,8 @@ class ChatServer:
                 with self.db_lock:
                     address = self.db_manager.resolve_user(username)
                 if address:
-                    ip, port = address
-                    response = f"OK {ip} {port}"
+                    ip, port, public_key, version = address
+                    response = f"OK {ip} {port} {public_key} {version}"
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
                     logger.info(f"Resolved address of user '{username}', ({ip}:{port})")
                 else:
@@ -462,14 +597,14 @@ class ChatServer:
             sock.settimeout(0.1)
             if self.successor:
                 try:
-                    sock.sendto(f"PING", (self.successor, 12346))
+                    sock.sendto(b"PING", (self.successor, 12346))
                     _, _ = sock.recvfrom(1024)
                 except Exception:
                     self.fix_tape_forward()
             time.sleep(0.1 * 3 * FAIL_TOLERANCE)
             if self.predecessor:
                 try:
-                    sock.sendto(f"PING", (self.predecessor, 12346))
+                    sock.sendto(b"PING", (self.predecessor, 12346))
                     _, _ = sock.recvfrom(1024)
                 except Exception:
                     self.fix_tape_backward()
@@ -522,8 +657,14 @@ class ChatServer:
         with self.db_lock:
             alien_users = self.db_manager.get_alien_users(self.lower_bound, self.upper_bound, self.rolling_hash)
         for user in alien_users:
+            self.place_user_record(
+                user[0],
+                user[1],
+                user[2],
+                user[3],
+                user[4],
+            )
             with self.db_lock:
-                self.register_user('.', '.', user[0], user[1], user[2])
                 self.db_manager.delete_user(user[0])
             logger.info("Moved alien user '%s' to the correct server", user[0])
 
@@ -531,6 +672,7 @@ class ChatServer:
     def replics_manager(self):
         """Maintain a set of replicator servers that hold copies of this node's user data."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            last_full_sync = 0.0
             while self.running:
                 if self.crisis:
                     time.sleep(1)
@@ -543,18 +685,28 @@ class ChatServer:
                         replics.remove(replic)
                         sock.sendto(f"DROP_REPLICS {self.get_ip()}".encode(), (replic, 12345))
                         logger.warning("Replication target %s removed after ping failure", replic)
-                if new_replics_needed > 0:            
+                new_replics = []
+                if new_replics_needed > 0:
                     new_replics = self.find_new_replics(new_replics_needed, replics)
                     if new_replics:
                         logger.info(f"New replics: {new_replics}")
                     replics.extend(new_replics)
-                    self.replics = replics
+                self.replics = replics
 
+                full_sync_targets = list(new_replics)
+                if time.time() - last_full_sync >= 5:
+                    full_sync_targets = list(replics)
+                    last_full_sync = time.time()
+
+                if full_sync_targets:
                     with self.db_lock:
                         user_info = self.db_manager.get_bd_copy()
                     for user in user_info:
-                        for replic in new_replics:
-                            sock.sendto(f"REPLIC {user[0]} {user[1]} {user[2]}".encode(), (replic, 12345))
+                        for replic in full_sync_targets:
+                            sock.sendto(
+                                f"REPLIC {user[0]} {user[1]} {user[2]} {user[4]} {user[3]}".encode(),
+                                (replic, 12345),
+                            )
                             logger.info("Replicated existing user '%s' to %s", user[0], replic)
                 time.sleep(1)
 
@@ -589,7 +741,13 @@ class ChatServer:
                     with self.db_lock:
                         user_info = self.db_manager.get_replics(replicant)
                     for user in user_info:
-                        self.register_user('.', '.', user[0], user[1], user[2])
+                        self.place_user_record(
+                            user[0],
+                            user[1],
+                            user[2],
+                            user[3],
+                            user[4],
+                        )
                     self.replicants.remove(replicant)
                     with self.db_lock:
                         self.db_manager.drop_replics(replicant)
