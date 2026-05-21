@@ -1,0 +1,89 @@
+services:
+  flock-server:
+    image: flock:latest
+    working_dir: /app/server
+    command:
+      - sh
+      - -c
+      - python server.py "$(hostname)"
+    environment:
+      FLOCK_FAIL_TOLERANCE: "3"
+    volumes:
+      - flock-server-db:/app/server/db
+    networks:
+      - host
+    deploy:
+      mode: global
+      restart_policy:
+        condition: on-failure
+
+  client-alice:
+    image: flock:latest
+    working_dir: /app/client
+    command:
+      - python
+      - -c
+      - "from ui_flask import app, socketio; socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)"
+    environment:
+      FLOCK_SECRET_KEY: "change-this-secret-for-alice"
+    volumes:
+      - flock-client-alice-chats:/app/client/chats
+      - flock-client-alice-keys:/app/client/keys
+    networks:
+      - host
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  client-bob:
+    image: flock:latest
+    working_dir: /app/client
+    command:
+      - python
+      - -c
+      - "from ui_flask import app, socketio; socketio.run(app, host='0.0.0.0', port=5002, debug=False, allow_unsafe_werkzeug=True)"
+    environment:
+      FLOCK_SECRET_KEY: "change-this-secret-for-bob"
+    volumes:
+      - flock-client-bob-chats:/app/client/chats
+      - flock-client-bob-keys:/app/client/keys
+    networks:
+      - host
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  client-ana:
+    image: flock:latest
+    working_dir: /app/client
+    command:
+      - python
+      - -c
+      - "from ui_flask import app, socketio; socketio.run(app, host='0.0.0.0', port=5003, debug=False, allow_unsafe_werkzeug=True)"
+    environment:
+      FLOCK_SECRET_KEY: "change-this-secret-for-ana"
+    volumes:
+      - flock-client-ana-chats:/app/client/chats
+      - flock-client-ana-keys:/app/client/keys
+    networks:
+      - host
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+networks:
+  host:
+    external: true
+    name: host
+
+volumes:
+  flock-server-db:
+  flock-client-alice-chats:
+  flock-client-alice-keys:
+  flock-client-bob-chats:
+  flock-client-bob-keys:
+  flock-client-ana-chats:
+  flock-client-ana-keys:
