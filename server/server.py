@@ -100,13 +100,14 @@ class ChatServer:
         with self.db_lock:
             self.db_manager.set_db(self.name)
 
+        self.print_banner("Arrancando nodo servidor")
         servers = self.discover_servers()
 
         if not servers:
-            logger.info("No other servers running")
+            logger.info("[OK] No se detectaron otros servidores; este nodo inicia el anillo")
         else:
             for server in servers:
-                logger.info(f"Server found: {server[0]} at {server[1]}")
+                logger.info("[OK] Nodo descubierto: %s (%s)", server[0], server[1])
             self.join_to_servers(servers)
 
         self.command_socket.bind(("", 12345))
@@ -121,9 +122,16 @@ class ChatServer:
         threading.Thread(target=self.info_updater, daemon=True).start()
         threading.Thread(target=self.multicast_listener, daemon=True).start()
 
-        logger.info("Server '%s' started background services", self.name)
+        logger.info("[OK] Servicios de fondo iniciados para '%s'", self.name)
         self.listen_for_messages()
 
+    def print_banner(self, title):
+        logger.info("=" * 72)
+        logger.info("Flock Server | %s", title)
+        logger.info("=" * 72)
+        logger.info("Nodo: %s | IP local: %s | Puerto comandos: 12345 | Puerto health: 12346", self.name, self.get_ip())
+        logger.info("Replicas configuradas: %s | Sync replicas: cada %.1fs", FAIL_TOLERANCE, REPLICA_FULL_SYNC_INTERVAL)
+        logger.info("-" * 72)
 
 
     def discover_servers(self):
@@ -142,7 +150,7 @@ class ChatServer:
             except socket.timeout:
                 pass
 
-            logger.info("Broadcast discovery found %s peer server(s)", len(servers))
+            logger.info("[OK] Descubrimiento broadcast encontro %s nodo(s)", len(servers))
             return servers
 
     def join_to_servers(self, servers):
@@ -657,7 +665,7 @@ class ChatServer:
 
             time.sleep(1)
 
-        logger.info("Shutting tape integrity check off")
+        logger.info("[INFO] Verificacion de integridad del anillo detenida")
 
     def fix_tape(self):
         """Attempt to repair the ring by checking neighbors and promoting backups when needed."""
@@ -769,7 +777,7 @@ class ChatServer:
                 if new_replics_needed > 0:
                     new_replics = self.find_new_replics(new_replics_needed, replics)
                     if new_replics:
-                        logger.info(f"New replics: {new_replics}")
+                        logger.info("[OK] Nuevos nodos de replica seleccionados: %s", new_replics)
                     replics.extend(new_replics)
                 self.replics = replics
 
@@ -837,7 +845,7 @@ class ChatServer:
                     result={"records": len(user_info)},
                 )
         if assimilated_records:
-            logger.warning("Re-replicating %s assimilated record(s)", len(assimilated_records))
+            logger.warning("[!] Re-replicando %s registro(s) asimilado(s)", len(assimilated_records))
             self.replicate_owned_records(assimilated_records, log_level="INFO")
 
 
@@ -846,8 +854,8 @@ class ChatServer:
         if STATUS_LOG_INTERVAL <= 0:
             return
         while self.running:
-            self.print_info()
             time.sleep(STATUS_LOG_INTERVAL)
+            self.print_info()
 
 
     #region Utils
@@ -887,11 +895,16 @@ class ChatServer:
 
 
     def print_info(self):
-        """Print a short status line describing the server state."""
-        logger.info(f"Server '{self.name}' on ({self.get_ip()}:12345). Storing in range ({self.lower_bound}, {self.upper_bound}). Predecessor is {self.predecessor}, successor is {self.successor}")
-        logger.info(f"Successors: {self.successors}")
-        logger.info(f"Replics: {self.replics}")
-        logger.info(f"Replicants: {self.replicants}")
+        """Print a short status block describing the server state."""
+        logger.info("Estado del nodo '%s'", self.name)
+        logger.info("  Direccion: %s:12345", self.get_ip())
+        logger.info("  Rango hash: [%s, %s]", self.lower_bound, self.upper_bound)
+        logger.info("  Predecesor: %s", self.predecessor or "ninguno")
+        logger.info("  Sucesor: %s", self.successor or "ninguno")
+        logger.info("  Sucesores respaldo: %s", self.successors or "[]")
+        logger.info("  Replicas propias en: %s", self.replics or "[]")
+        logger.info("  Replicas recibidas de: %s", self.replicants or "[]")
+        logger.info("-" * 72)
 
     def send_json_response(self, address, payload, ok=True):
         status = "OK" if ok else "ERROR"
@@ -1058,14 +1071,14 @@ class ChatServer:
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
         
-        logger.info(f"[Muticast] Escuchando mensajes en {MCAST_GRP}:{MCAST_PORT}")
+        logger.info("[Multicast] Escuchando descubrimiento en %s:%s", MCAST_GRP, MCAST_PORT)
         
 
         while True:
             try:
                 data, addr = sock.recvfrom(BUFFER_SIZE)
                 message = data.decode().strip()
-                logger.info(f"Recibido mensaje: '{message}' desde {addr}")
+                logger.info("[Multicast] Mensaje recibido desde %s: %s", addr, message)
                 if message.startswith(DISCOVER_MSG + ":"):
                     local_ip = self.get_ip()
                     _, rec_ip, rec_port = message.split(":")

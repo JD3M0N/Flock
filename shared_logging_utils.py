@@ -24,6 +24,18 @@ SENSITIVE_COMMANDS = {"REGISTER", "REPLIC", "TAKEOVER", "MESSAGE", "PUBKEY_RES"}
 MAX_STRING_LENGTH = 180
 DEFAULT_MAX_BYTES = 1 * 1024 * 1024
 DEFAULT_BACKUP_COUNT = 1
+HUMAN_EVENT_MESSAGES = {
+    "node_initialized": "[OK] Configuracion del nodo cargada",
+    "register_accepted": "[OK] Registro aceptado",
+    "replica_written": "[OK] Replica actualizada",
+    "replica_assimilated": "[OK] Replica asimilada",
+    "checksum_generated": "[OK] Checksum generado",
+    "sync_completed": "[OK] Sincronizacion completada",
+    "node_unreachable": "[!] Nodo no alcanzable",
+    "fix_started": "[!] Reparacion del anillo iniciada",
+    "successor_promoted": "[OK] Sucesor de respaldo promovido",
+    "range_split": "[OK] Rango dividido para nuevo nodo",
+}
 
 
 def repo_root() -> Path:
@@ -112,6 +124,35 @@ class JsonLineFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+class HumanConsoleFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        flock_fields = sanitize(getattr(record, "flock", {}) or {})
+        component = getattr(record, "component", None) or record.name.replace("flock.", "")
+        timestamp = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
+        event = flock_fields.get("event")
+        raw_message = record.getMessage()
+        message = flock_fields.get("message") or raw_message
+        if event and message == event:
+            message = HUMAN_EVENT_MESSAGES.get(str(event), str(event).replace("_", " "))
+
+        parts = [f"{timestamp}", f"{record.levelname:<7}", component]
+
+        context = []
+        if event and event != "log":
+            context.append(f"event={event}")
+        for key in ("node", "peer", "username", "version", "range", "result"):
+            value = flock_fields.get(key)
+            if value is not None:
+                context.append(f"{key}={value}")
+
+        line = " | ".join(parts) + f" | {message}"
+        if context:
+            line += " | " + " ".join(context)
+        if record.exc_info:
+            line += "\n" + self.formatException(record.exc_info)
+        return line
+
+
 def configure_logger(name: str, log_filename: str) -> Logger:
     logger = logging.getLogger(name)
     for handler in list(logger.handlers):
@@ -123,11 +164,12 @@ def configure_logger(name: str, log_filename: str) -> Logger:
     logs_dir = configured_log_dir()
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    formatter = JsonLineFormatter()
+    json_formatter = JsonLineFormatter()
+    console_formatter = HumanConsoleFormatter()
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(configured_level())
-    console_handler.setFormatter(formatter)
+    console_handler.setFormatter(console_formatter)
 
     file_handler = RotatingFileHandler(
         logs_dir / log_filename,
@@ -136,7 +178,7 @@ def configure_logger(name: str, log_filename: str) -> Logger:
         encoding="utf-8",
     )
     file_handler.setLevel(configured_level())
-    file_handler.setFormatter(formatter)
+    file_handler.setFormatter(json_formatter)
 
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
