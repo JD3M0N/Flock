@@ -131,6 +131,18 @@ python ui_console.py
 
 Commands: `@username` (open chat), `/back` (return to menu), `/quit` (exit).
 
+### 3. Watch structured logs
+
+Flock writes server, client and console logs as JSON Lines under `logs/` by default. For a presentation-friendly view:
+
+```bash
+./tail_logs.sh
+./tail_logs.sh server
+./tail_logs.sh client
+```
+
+Use `./tail_logs.sh --raw` to show the original JSONL records. The formatted view uses `jq` when available and falls back to `tail -F` otherwise.
+
 ## Protocol Reference
 
 ### Server-to-Server (UDP, port 12345)
@@ -268,6 +280,10 @@ CREATE TABLE messages (
 | Flask port | `client/ui_flask.py` | `5000` | Web UI HTTP port |
 | RSA key size | `client/crypto_manager.py` | `2048` bits | Key strength |
 | AES key size | `client/crypto_manager.py` | `256` bits | Symmetric key strength |
+| `FLOCK_LOG_LEVEL` | `shared_logging_utils.py` | `INFO` | Minimum log level for console and file output |
+| `FLOCK_LOG_DIR` | `shared_logging_utils.py` | `<repo>/logs` | Directory for JSON Lines log files |
+| `FLOCK_LOG_MAX_BYTES` | `shared_logging_utils.py` | `5242880` | Rotation size for each log file |
+| `FLOCK_LOG_BACKUP_COUNT` | `shared_logging_utils.py` | `5` | Number of rotated backups to keep |
 
 ## Dependencies
 

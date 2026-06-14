@@ -10,7 +10,7 @@ import base64
 import hashlib
 # from termcolor import colored as col
 import struct
-from logging_utils import configure_logger
+from logging_utils import configure_logger, log_event, summarize_command
 try:
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding
@@ -61,10 +61,12 @@ class ChatServer:
 
         self.running = True
         self.crisis = False
-        logger.info(
-            "ChatServer '%s' initialized with fail tolerance %s",
-            self.name,
-            FAIL_TOLERANCE,
+        log_event(
+            logger,
+            "INFO",
+            "node_initialized",
+            node=self.name,
+            result=f"fail_tolerance={FAIL_TOLERANCE}",
         )
 
     def is_valid_username(self, username):
@@ -182,12 +184,14 @@ class ChatServer:
                     self.successor = successor
                 else:
                     self.successor = None
-                logger.info(
-                    "Join completed. Range=(%s, %s) predecessor=%s successor=%s",
-                    self.lower_bound,
-                    self.upper_bound,
-                    self.predecessor,
-                    self.successor,
+                log_event(
+                    logger,
+                    "INFO",
+                    "node_joined",
+                    node=self.name,
+                    peer=server[1],
+                    range={"lower": self.lower_bound, "upper": self.upper_bound},
+                    result={"predecessor": self.predecessor, "successor": self.successor},
                 )
             else:
                 logger.error(f"Joining request failed: {response}") 
@@ -225,7 +229,17 @@ class ChatServer:
                 message = data.decode()
 
                 if message != "PING":
-                    logger.info(f"Message from {address}: {message}")
+                    command_summary = summarize_command(message)
+                    log_event(
+                        logger,
+                        "DEBUG",
+                        "command_received",
+                        node=self.name,
+                        peer=address[0],
+                        username=command_summary.get("username"),
+                        version=command_summary.get("version"),
+                        result=command_summary,
+                    )
 
                 if message.startswith("DISCOVER"):
                     self.command_socket.sendto(f"{self.name}".encode(), address)
@@ -254,7 +268,7 @@ class ChatServer:
                     self.send_json_response(address, self.sync_from_owner(owner.strip()))
 
                 elif message.startswith("JOIN"):
-                    logger.info(f"Processing JOIN from {address}")
+                    log_event(logger, "INFO", "node_joined", node=self.name, peer=address[0], result="join_requested")
                     self.process_join_request(address)
                     self.print_info()
 
@@ -290,7 +304,7 @@ class ChatServer:
 
                 elif message.startswith("FIX"):
                     self.crisis = True
-                    logger.warning("Entering FIX/crisis mode after failure detection")
+                    log_event(logger, "WARNING", "fix_started", node=self.name, peer=address[0], result="broadcast_received")
                     self.fix_tape()
                     self.replicants_manager()
                     self.correct_bd()
@@ -314,7 +328,16 @@ class ChatServer:
                             owner=address[0],
                         )
                     if stored:
-                        logger.info("Registered replic user '%s' from %s (%s)", username, address[0], resolution)
+                        log_event(
+                            logger,
+                            "INFO",
+                            "replica_written",
+                            node=self.name,
+                            peer=address[0],
+                            username=username,
+                            version=version,
+                            result=resolution,
+                        )
                     else:
                         logger.warning("Rejected replica for '%s' from %s (%s)", username, address[0], resolution)
 
@@ -507,7 +530,17 @@ class ChatServer:
                     logger.warning(response)
                     return
                 self.replicate_owned_records([(username, ip, port, public_key, version)])
-                logger.info(response)
+                log_event(
+                    logger,
+                    "INFO",
+                    "register_accepted",
+                    node=self.name,
+                    peer=f"{answer_to_ip}:{answer_to_port}",
+                    username=username,
+                    version=version,
+                    range={"lower": self.lower_bound, "upper": self.upper_bound},
+                    result="stored_and_replicated",
+                )
 
 
     def resolve_user(self, answer_to_ip, answer_to_port, username):
@@ -557,12 +590,14 @@ class ChatServer:
 
         self.upper_bound = joinee_lower_bound - 1
         self.successor = joinee[0]
-        logger.info(
-            "Processed join for %s. New local range=(%s, %s), successor=%s",
-            joinee[0],
-            self.lower_bound,
-            self.upper_bound,
-            self.successor,
+        log_event(
+            logger,
+            "INFO",
+            "range_split",
+            node=self.name,
+            peer=joinee[0],
+            range={"lower": self.lower_bound, "upper": self.upper_bound},
+            result={"new_successor": self.successor},
         )
 
     def request_predecessor_change(self, target, new_predecessor):
@@ -604,9 +639,15 @@ class ChatServer:
                         _, _ = sock.recvfrom(1024)
 
                 except Exception as e:
-                    logger.warning("Tape integrity compromised; detected failed neighbor: %s", e)
+                    log_event(
+                        logger,
+                        "WARNING",
+                        "node_unreachable",
+                        node=self.name,
+                        result=f"integrity_check_failed:{e}",
+                    )
                     sock.sendto("FIX".encode(), broadcast_address)
-                    logger.warning("Broadcasted FIX to the cluster")
+                    log_event(logger, "WARNING", "fix_started", node=self.name, result="broadcasted")
 
             time.sleep(1)
 
@@ -622,7 +663,7 @@ class ChatServer:
                     sock.sendto(b"PING", (self.successor, 12346))
                     _, _ = sock.recvfrom(1024)
                 except Exception:
-                    logger.warning("Detected failed successor %s; entering forward repair", self.successor)
+                    log_event(logger, "WARNING", "node_unreachable", node=self.name, peer=self.successor, result="successor_ping_failed")
                     self.fix_tape_forward()
             time.sleep(0.1 * 3 * FAIL_TOLERANCE)
             if self.predecessor:
@@ -630,7 +671,7 @@ class ChatServer:
                     sock.sendto(b"PING", (self.predecessor, 12346))
                     _, _ = sock.recvfrom(1024)
                 except Exception:
-                    logger.warning("Detected failed predecessor %s; entering backward repair", self.predecessor)
+                    log_event(logger, "WARNING", "node_unreachable", node=self.name, peer=self.predecessor, result="predecessor_ping_failed")
                     self.fix_tape_backward()
         self.print_info()
         self.crisis = False
@@ -652,10 +693,18 @@ class ChatServer:
                     self.upper_bound = int(lower_bound) - 1
                     self.request_predecessor_change(successor, self.get_ip())
                     self.successor = successor
-                    logger.warning("Promoted backup successor %s after successor failure", successor)
+                    log_event(
+                        logger,
+                        "WARNING",
+                        "successor_promoted",
+                        node=self.name,
+                        peer=successor,
+                        range={"lower": self.lower_bound, "upper": self.upper_bound},
+                        result="backup_successor_alive",
+                    )
                     return
                 except Exception as e:
-                    logger.warning(f"Server {successor} unavailable: {e}")
+                    log_event(logger, "WARNING", "node_unreachable", node=self.name, peer=successor, result=str(e))
             self.upper_bound = HASH_MOD - 1
             self.successor = None
             self.successors = []
@@ -670,10 +719,11 @@ class ChatServer:
                     sock.sendto(f"PING".encode(), (self.predecessor, 12346))
                     _, _ = sock.recvfrom(1024)
                 except Exception:
-                    sock.sendto(f"KILL".encode(), (self.predecessor, 12345))
+                    failed_predecessor = self.predecessor
+                    sock.sendto(f"KILL".encode(), (failed_predecessor, 12345))
                     self.lower_bound = 0
                     self.predecessor = None
-                    logger.warning("Predecessor removed after failed health check")
+                    log_event(logger, "WARNING", "node_unreachable", node=self.name, peer=failed_predecessor, result="predecessor_removed")
 
 
     def correct_bd(self):
@@ -708,7 +758,7 @@ class ChatServer:
                         new_replics_needed += 1
                         replics.remove(replic)
                         sock.sendto(f"DROP_REPLICS {self.get_ip()}".encode(), (replic, 12345))
-                        logger.warning("Replication target %s removed after ping failure", replic)
+                        log_event(logger, "WARNING", "node_unreachable", node=self.name, peer=replic, result="replica_target_removed")
                 new_replics = []
                 if new_replics_needed > 0:
                     new_replics = self.find_new_replics(new_replics_needed, replics)
@@ -756,7 +806,7 @@ class ChatServer:
         assimilated_records = []
         for replicant in list(self.replicants):
             if not self.ping(replicant):
-                logger.warning("Replica owner %s is unavailable; assimilating replicas", replicant)
+                log_event(logger, "WARNING", "node_unreachable", node=self.name, peer=replicant, result="replica_owner_unavailable")
                 with self.db_lock:
                     user_info = self.db_manager.get_replics(replicant)
                 for user in user_info:
@@ -772,7 +822,14 @@ class ChatServer:
                 self.replicants.remove(replicant)
                 with self.db_lock:
                     self.db_manager.drop_replics(replicant)
-                logger.info("Assimilated %s replica record(s) from %s", len(user_info), replicant)
+                log_event(
+                    logger,
+                    "INFO",
+                    "replica_assimilated",
+                    node=self.name,
+                    peer=replicant,
+                    result={"records": len(user_info)},
+                )
         if assimilated_records:
             logger.warning("Re-replicating %s assimilated record(s)", len(assimilated_records))
             self.replicate_owned_records(assimilated_records)
@@ -897,10 +954,12 @@ class ChatServer:
     def checksum_payload(self):
         snapshot = self.snapshot_payload()
         canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
-        return {
+        payload = {
             "checksum": hashlib.sha256(canonical.encode()).hexdigest(),
             "records": len(snapshot["owned"]) + len(snapshot["replicas"]),
         }
+        log_event(logger, "INFO", "checksum_generated", node=self.name, result=payload)
+        return payload
 
     def sync_from_owner(self, owner):
         with self.db_lock:
@@ -926,21 +985,15 @@ class ChatServer:
                 applied_records.append(user)
         if applied:
             self.replicate_owned_records(applied_records)
-        logger.info(
-            "SYNC_FROM %s reconciled %s record(s): applied=%s forwarded=%s rejected=%s",
-            owner,
-            len(user_info),
-            applied,
-            forwarded,
-            rejected,
-        )
-        return {
+        result = {
             "owner": owner,
             "seen": len(user_info),
             "applied": applied,
             "forwarded": forwarded,
             "rejected": rejected,
         }
+        log_event(logger, "INFO", "sync_completed", node=self.name, peer=owner, result=result)
+        return result
 
     def replicate_owned_records(self, records, targets=None):
         targets = list(self.replics if targets is None else targets)
@@ -956,7 +1009,16 @@ class ChatServer:
                         (replic, 12345),
                     )
                     sent += 1
-                    logger.info("Replicated user '%s' to backup server %s", username, replic)
+                    log_event(
+                        logger,
+                        "INFO",
+                        "replica_written",
+                        node=self.name,
+                        peer=replic,
+                        username=username,
+                        version=version,
+                        result="sent",
+                    )
         return sent
 
     def rolling_hash(self, s: str, base=911382629, mod=HASH_MOD) -> int:   

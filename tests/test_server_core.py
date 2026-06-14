@@ -1,4 +1,5 @@
 import json
+import logging
 
 from conftest import load_module
 
@@ -52,6 +53,21 @@ def teardown_server(server):
     server.running = False
     server.command_socket.close()
     server.ping_socket.close()
+
+
+class CaptureHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    def emit(self, record):
+        self.events.append(getattr(record, "flock", {}).get("event"))
+
+
+def capture_server_events():
+    handler = CaptureHandler()
+    server_module.logger.addHandler(handler)
+    return handler
 
 
 def test_server_validates_username_and_addresses(monkeypatch):
@@ -133,6 +149,7 @@ def test_server_snapshot_is_deterministic_and_hides_public_keys(monkeypatch, tmp
 def test_server_checksum_is_stable_and_changes_with_state(monkeypatch, tmp_path):
     server = build_server(monkeypatch)
     init_db(server, tmp_path)
+    events = capture_server_events()
     try:
         server.db_manager.register_user("alice", "10.0.0.1", 5001, public_key="pub-a", version=1)
 
@@ -144,13 +161,16 @@ def test_server_checksum_is_stable_and_changes_with_state(monkeypatch, tmp_path)
         assert first == second
         assert third["checksum"] != first["checksum"]
         assert third["records"] == 1
+        assert "checksum_generated" in events.events
     finally:
+        server_module.logger.removeHandler(events)
         teardown_server(server)
 
 
 def test_server_sync_from_owner_assimilates_only_that_owner(monkeypatch, tmp_path):
     server = build_server(monkeypatch)
     init_db(server, tmp_path)
+    events = capture_server_events()
     try:
         server.db_manager.register_replic_user("alice", "10.0.0.1", 5001, public_key="pub-a", version=1, owner="node-a")
         server.db_manager.register_replic_user("bob", "10.0.0.2", 5002, public_key="pub-b", version=1, owner="node-b")
@@ -160,7 +180,9 @@ def test_server_sync_from_owner_assimilates_only_that_owner(monkeypatch, tmp_pat
         assert result == {"owner": "node-a", "seen": 1, "applied": 1, "forwarded": 0, "rejected": 0}
         assert server.db_manager.resolve_user("alice") == ("10.0.0.1", 5001, "pub-a", 1)
         assert server.db_manager.resolve_user("bob") is None
+        assert "sync_completed" in events.events
     finally:
+        server_module.logger.removeHandler(events)
         teardown_server(server)
 
 
@@ -202,6 +224,7 @@ def test_server_replica_rejects_stale_updates(monkeypatch, tmp_path):
 def test_server_assimilated_records_are_re_replicated(monkeypatch, tmp_path):
     server = build_server(monkeypatch)
     init_db(server, tmp_path)
+    events = capture_server_events()
     try:
         server.replicants = ["node-a"]
         server.replics = ["127.0.0.20"]
@@ -213,5 +236,8 @@ def test_server_assimilated_records_are_re_replicated(monkeypatch, tmp_path):
         assert server.db_manager.resolve_user("alice") == ("10.0.0.1", 5001, "pub-a", 1)
         assert server.db_manager.get_replics("node-a") == []
         assert DummySocket.sent == [(b"REPLIC alice 10.0.0.1 5001 1 pub-a", ("127.0.0.20", 12345))]
+        assert "replica_assimilated" in events.events
+        assert "replica_written" in events.events
     finally:
+        server_module.logger.removeHandler(events)
         teardown_server(server)

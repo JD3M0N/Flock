@@ -10,7 +10,7 @@ import hashlib
 import hmac
 import secrets
 
-from logging_utils import configure_logger
+from logging_utils import configure_logger, log_event, summarize_command
 
 
 logger = configure_logger("flock.client", "client.log")
@@ -171,7 +171,17 @@ class chat_client:
         try:
             self.client_socket.sendto(f"{command}".encode(), self.server_address)
             response, _ = self.read_response(self.client_socket)
-            logger.info("Command sent to server %s: %s", self.server_address, command)
+            command_summary = summarize_command(command)
+            log_event(
+                logger,
+                "INFO",
+                "server_command_sent",
+                node=self.username,
+                peer=str(self.server_address),
+                username=command_summary.get("username"),
+                version=command_summary.get("version"),
+                result=command_summary,
+            )
             return response
         except Exception as e:
             self.server_down = True
