@@ -1,19 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Flock | Diagnostico{% endblock %}
 {% block content %}
-<section class="hero panel">
-    <div class="hero-kicker">Panel de defensa</div>
-    <h2 class="hero-title">Estado operativo del cliente.</h2>
-    <p class="hero-text">
-        Supervisa la sesion local, el gestor activo, la cola offline y los eventos visibles para demostrar funcionamiento y recuperacion.
-    </p>
-    <div class="btn-row">
+<section class="page-head">
+    <div>
+        <div class="page-kicker">Panel de defensa</div>
+        <h2 class="page-title">Estado operativo</h2>
+        <p class="page-copy">Sesion, nodo activo, cola offline y eventos recientes para la demostracion.</p>
+    </div>
+    <div class="toolbar">
         <button class="btn btn-primary" id="refreshBtn" type="button">Actualizar</button>
         <button class="btn btn-secondary" id="pingBtn" type="button">Probar gestor</button>
         <button class="btn btn-secondary" id="retryBtn" type="button">Reintentar pendientes</button>
     </div>
-    <div id="feedback" class="status hidden"></div>
 </section>
+
+<div id="feedback" class="status hidden" style="margin-bottom: 16px;"></div>
 
 <section class="ops-grid">
     <div class="ops-card">
@@ -40,9 +41,8 @@
 
 <section class="grid grid-2">
     <div class="panel panel-strong">
-        <div class="card">
+        <div class="panel-body">
             <h3 class="section-title">Cola de entrega local</h3>
-            <p class="section-copy">Los mensajes listados aqui se reintentan desde el cliente, sin almacenamiento centralizado.</p>
             <div id="pendingList" class="compact-list"></div>
         </div>
     </div>
@@ -67,10 +67,9 @@
     </aside>
 </section>
 
-<section class="panel panel-strong" style="margin-top: 24px;">
-    <div class="card">
+<section class="panel panel-strong" style="margin-top: 16px;">
+    <div class="panel-body">
         <h3 class="section-title">Eventos recientes</h3>
-        <p class="section-copy">Registro compacto de acciones visibles desde la interfaz durante la demostracion.</p>
         <div id="eventLog" class="compact-list event-log"></div>
     </div>
 </section>
@@ -145,7 +144,7 @@
         const list = document.getElementById('pendingList');
         list.innerHTML = '';
         if (items.length === 0) {
-            list.innerHTML = '<div class="status">No hay mensajes pendientes. La cola local esta limpia.</div>';
+            list.innerHTML = '<div class="status">Cola limpia. No hay mensajes pendientes.</div>';
             return;
         }
 

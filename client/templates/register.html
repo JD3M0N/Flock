@@ -1,21 +1,19 @@
 {% extends "base.html" %}
 {% block title %}Flock | Acceso Seguro{% endblock %}
 {% block content %}
-<section class="hero panel">
-    <div class="hero-kicker">Secure Access</div>
-    <h2 class="hero-title">Desbloquea tu identidad local.</h2>
-    <p class="hero-text">
-        La contraseña protege tus claves privadas en este dispositivo. El servidor distribuido solo ve tu nombre y tu presencia en la red.
-    </p>
+<section class="page-head">
+    <div>
+        <div class="page-kicker">Identidad local</div>
+        <h2 class="page-title">Entra o crea tu perfil</h2>
+        <p class="page-copy">La contrasena protege tus claves privadas en este dispositivo.</p>
+    </div>
+    <span class="pill pill-accent" id="modePill">Comprobando perfil</span>
 </section>
 
 <section class="grid grid-2">
     <div class="panel panel-strong">
-        <div class="card">
-            <h3 class="section-title">Acceso unico</h3>
-            <p class="section-copy">
-                Escribe tu usuario y contraseña. Si ya existe un perfil local, entraras. Si no existe, se creara automaticamente con esa contraseña.
-            </p>
+        <div class="panel-body">
+            <h3 class="section-title">Credenciales</h3>
             <form id="authForm">
                 <div class="field">
                     <label for="username">Nombre de usuario</label>
@@ -26,7 +24,7 @@
                     <input class="input" type="password" id="password" minlength="8" autocomplete="current-password" placeholder="Minimo 8 caracteres">
                 </div>
                 <div class="btn-row">
-                    <button class="btn btn-primary" id="loginBtn" type="submit">Entrar o crear cuenta</button>
+                    <button class="btn btn-primary" id="loginBtn" type="submit">Continuar</button>
                 </div>
             </form>
             <div id="feedback" class="status hidden"></div>
@@ -34,7 +32,7 @@
                 {% if has_profile %}
                 Se detecto un perfil local existente para este usuario en este dispositivo.
                 {% else %}
-                Si el perfil no existe todavia, esta contraseña se usara para crearlo y cifrar tu clave privada.
+                Si el perfil no existe todavia, esta contrasena se usara para crearlo y cifrar tu clave privada.
                 {% endif %}
             </p>
         </div>
@@ -42,16 +40,16 @@
 
     <aside class="metrics">
         <div class="metric">
-            <div class="metric-label">Proteccion local</div>
-            <div class="metric-value">PBKDF2 + clave privada cifrada</div>
+            <div class="metric-label">Proteccion</div>
+            <div class="metric-value metric-value-small">PBKDF2 + clave privada cifrada</div>
         </div>
         <div class="metric">
             <div class="metric-label">Mensajeria</div>
-            <div class="metric-value">RSA 2048 + AES GCM</div>
+            <div class="metric-value metric-value-small">RSA 2048 + AES GCM</div>
         </div>
         <div class="metric">
-            <div class="metric-label">Sesion</div>
-            <div class="metric-value">Flask + SocketIO endurecido</div>
+            <div class="metric-label">Servidor</div>
+            <div class="metric-value metric-value-small">Solo presencia e identidad</div>
         </div>
     </aside>
 </section>
@@ -69,7 +67,7 @@
         const button = document.getElementById('loginBtn');
 
         button.disabled = true;
-        showFeedback('<span class="spinner"></span> Procesando acceso seguro...', false, false, true);
+        showFeedback('<span class="spinner"></span> Validando identidad local...', false, false, true);
 
         try {
             const response = await fetch('/auth', {
@@ -114,6 +112,7 @@
 
     function syncProfileHint() {
         const exists = localProfiles.has(usernameInput.value.trim());
+        document.getElementById('modePill').textContent = exists ? 'Modo: entrar' : 'Modo: crear perfil';
         document.getElementById('modeNote').textContent = exists
             ? 'Se encontro un perfil local para este usuario. Se intentara iniciar sesion.'
             : 'No existe un perfil local todavia. Se creara automaticamente al continuar.';

@@ -155,6 +155,10 @@ def resolve_user(server_ip, username):
 def main():
     parser = argparse.ArgumentParser(description="Run Flock failure-recovery acceptance scenario in Docker.")
     parser.add_argument("--skip-build", action="store_true", help="Use the existing flock:acceptance image.")
+    parser.add_argument(
+        "--report-file",
+        help="Optional path where the JSON evidence report will be written after a successful run.",
+    )
     args = parser.parse_args()
 
     cleanup()
@@ -207,12 +211,18 @@ def main():
             "resolved": resolved,
             "missing": missing,
         }
-        print(json.dumps(report, indent=2, sort_keys=True))
+        report_json = json.dumps(report, indent=2, sort_keys=True)
+        print(report_json)
 
         if missing:
             raise RuntimeError(f"Missing users after failure scenario: {sorted(missing)}")
         if final_checksum["records"] < len(users):
             raise RuntimeError("Final checksum reports fewer records than registered users")
+
+        if args.report_file:
+            with open(args.report_file, "w", encoding="utf-8") as handle:
+                handle.write(report_json)
+                handle.write("\n")
 
         print("Acceptance scenario passed.")
         return 0

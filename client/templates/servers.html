@@ -1,43 +1,36 @@
 {% extends "base.html" %}
 {% block title %}Flock | Nodos{% endblock %}
 {% block content %}
-<section class="hero panel">
-    <div class="hero-kicker">Cluster Discovery</div>
-    <h2 class="hero-title">Conecta tu cliente con el anillo activo.</h2>
-    <p class="hero-text">
-        Busca nodos disponibles en la red local, selecciona uno y prepara el acceso seguro al cliente web.
-    </p>
+<section class="page-head">
+    <div>
+        <div class="page-kicker">Conexion inicial</div>
+        <h2 class="page-title">Selecciona un nodo Flock</h2>
+        <p class="page-copy">Elige un servidor activo para registrar presencia y resolver contactos.</p>
+    </div>
+    <button class="btn btn-primary" id="discoverBtn" type="button" onclick="discover()">Buscar nodos</button>
 </section>
 
 <section class="grid grid-2">
     <div class="panel panel-strong">
-        <div class="card">
-            <h3 class="section-title">Seleccion de servidor</h3>
-            <p class="section-copy">
-                Flock necesita un nodo inicial para registrar presencia, resolver usuarios y mantener el estado distribuido.
-            </p>
-            <div class="btn-row">
-                <button class="btn btn-primary" id="discoverBtn" type="button" onclick="discover()">
-                    Buscar servidores
-                </button>
-            </div>
+        <div class="panel-body">
+            <h3 class="section-title">Nodos disponibles</h3>
             <div id="status" class="status hidden"></div>
-            <div id="serverList" class="server-list" style="margin-top: 18px;"></div>
+            <div id="serverList" class="server-list" style="margin-top: 12px;"></div>
         </div>
     </div>
 
     <aside class="metrics">
         <div class="metric">
-            <div class="metric-label">Descubrimiento</div>
+            <div class="metric-label">Busqueda</div>
             <div class="metric-value">UDP Broadcast</div>
         </div>
         <div class="metric">
             <div class="metric-label">Topologia</div>
-            <div class="metric-value">Anillo tolerante a fallos</div>
+            <div class="metric-value">Anillo tolerante</div>
         </div>
         <div class="metric">
             <div class="metric-label">Siguiente paso</div>
-            <div class="metric-value">Login local con cifrado</div>
+            <div class="metric-value">Identidad local</div>
         </div>
     </aside>
 </section>
@@ -88,6 +81,7 @@
                 '</div>' +
                 '<div class="pill pill-accent">Conectar</div>';
             item.onclick = function() {
+                btn.disabled = true;
                 showStatus('Conectando con el nodo seleccionado...');
                 socket.emit('connect_server', withCsrf(server));
             };
