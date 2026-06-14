@@ -7,6 +7,7 @@ import time
 import random
 import os
 import base64
+import hashlib
 # from termcolor import colored as col
 import struct
 from logging_utils import configure_logger
@@ -220,7 +221,7 @@ class ChatServer:
         """Main loop handling incoming UDP command messages on `self.command_socket`."""
         while self.running:
             try:
-                data, address = self.command_socket.recvfrom(1024)
+                data, address = self.command_socket.recvfrom(65535)
                 message = data.decode()
 
                 if message != "PING":
@@ -234,6 +235,23 @@ class ChatServer:
 
                 elif message.startswith("RANGE"):
                     self.command_socket.sendto(f"OK {self.lower_bound} {self.upper_bound}".encode(), address)
+
+                elif message.startswith("STATUS"):
+                    self.send_json_response(address, self.status_payload())
+
+                elif message.startswith("SNAPSHOT"):
+                    self.send_json_response(address, self.snapshot_payload())
+
+                elif message.startswith("CHECKSUM"):
+                    self.send_json_response(address, self.checksum_payload())
+
+                elif message.startswith("SYNC_FROM"):
+                    try:
+                        _, owner = message.split(" ", 1)
+                    except ValueError:
+                        self.send_json_response(address, {"error": "missing owner"}, ok=False)
+                        continue
+                    self.send_json_response(address, self.sync_from_owner(owner.strip()))
 
                 elif message.startswith("JOIN"):
                     logger.info(f"Processing JOIN from {address}")
@@ -272,7 +290,7 @@ class ChatServer:
 
                 elif message.startswith("FIX"):
                     self.crisis = True
-                    logger.warning("Entering FIX/crisis mode")
+                    logger.warning("Entering FIX/crisis mode after failure detection")
                     self.fix_tape()
                     self.replicants_manager()
                     self.correct_bd()
@@ -287,7 +305,7 @@ class ChatServer:
                     if address[0] not in self.replicants:
                         self.replicants.append(address[0])
                     with self.db_lock:
-                        self.db_manager.register_replic_user(
+                        resolution, stored = self.db_manager.upsert_replic_user(
                             username,
                             ip,
                             int(port),
@@ -295,7 +313,10 @@ class ChatServer:
                             version=int(version),
                             owner=address[0],
                         )
-                    logger.info(f"Registered replic user '{username}' from {address[0]}")
+                    if stored:
+                        logger.info("Registered replic user '%s' from %s (%s)", username, address[0], resolution)
+                    else:
+                        logger.warning("Rejected replica for '%s' from %s (%s)", username, address[0], resolution)
 
                 elif message.startswith("TAKEOVER"):
                     try:
@@ -402,20 +423,27 @@ class ChatServer:
                     f"TAKEOVER {username} {ip} {port} {version} {public_key}".encode(),
                     (self.predecessor, 12345),
                 )
+                return "forwarded_predecessor"
             elif username_hash > self.upper_bound and self.successor:
                 sock.sendto(
                     f"TAKEOVER {username} {ip} {port} {version} {public_key}".encode(),
                     (self.successor, 12345),
                 )
+                return "forwarded_successor"
             else:
                 with self.db_lock:
-                    self.db_manager.register_user(
+                    resolution, stored = self.db_manager.upsert_user(
                         username,
                         ip,
                         port,
                         public_key=public_key,
                         version=version,
                     )
+                if stored:
+                    logger.info("Placed user record '%s' locally (%s)", username, resolution)
+                else:
+                    logger.warning("Rejected local user record '%s' during placement (%s)", username, resolution)
+                return resolution
 
 
     def register_user(self, answer_to_ip, answer_to_port, username, ip, port, version, public_key, signature):
@@ -456,35 +484,29 @@ class ChatServer:
                 logger.info(f"Forwarded REGISTER for '{username}' to successor {self.successor}")
             else:
                 with self.db_lock:
-                    existing_record = self.db_manager.get_user_record(username)
-                    stored_public_key = existing_record[3] if existing_record else public_key
-
-                    if existing_record and stored_public_key != public_key:
-                        response = "ERROR Username belongs to a different identity key"
-                    elif not self.verify_registration_signature(stored_public_key, payload, signature):
+                    if not self.verify_registration_signature(public_key, payload, signature):
                         response = "ERROR Invalid registration signature"
-                    elif not self.db_manager.register_user(
-                        username,
-                        ip,
-                        port,
-                        public_key=stored_public_key,
-                        version=version,
-                    ):
-                        response = "ERROR Stale registration version"
                     else:
-                        response = f"OK User '{username}' in ({ip}:{port}) successfully registered"
+                        resolution, stored = self.db_manager.upsert_user(
+                            username,
+                            ip,
+                            port,
+                            public_key=public_key,
+                            version=version,
+                        )
+                        if not stored and resolution == db_manager.STALE:
+                            response = "ERROR Stale registration version"
+                        elif not stored and resolution == db_manager.IDENTITY_CONFLICT:
+                            response = "ERROR Username belongs to a different identity key"
+                        else:
+                            response = f"OK User '{username}' in ({ip}:{port}) successfully registered"
 
                 if answer_to_ip != '.':
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
                 if not response.startswith("OK"):
                     logger.warning(response)
                     return
-                for replic in self.replics:
-                    sock.sendto(
-                        f"REPLIC {username} {ip} {port} {version} {stored_public_key}".encode(),
-                        (replic, 12345),
-                    )
-                    logger.info("Replicated user '%s' to backup server %s", username, replic)
+                self.replicate_owned_records([(username, ip, port, public_key, version)])
                 logger.info(response)
 
 
@@ -582,7 +604,7 @@ class ChatServer:
                         _, _ = sock.recvfrom(1024)
 
                 except Exception as e:
-                    logger.warning("Tape integrity compromised")
+                    logger.warning("Tape integrity compromised; detected failed neighbor: %s", e)
                     sock.sendto("FIX".encode(), broadcast_address)
                     logger.warning("Broadcasted FIX to the cluster")
 
@@ -600,6 +622,7 @@ class ChatServer:
                     sock.sendto(b"PING", (self.successor, 12346))
                     _, _ = sock.recvfrom(1024)
                 except Exception:
+                    logger.warning("Detected failed successor %s; entering forward repair", self.successor)
                     self.fix_tape_forward()
             time.sleep(0.1 * 3 * FAIL_TOLERANCE)
             if self.predecessor:
@@ -607,6 +630,7 @@ class ChatServer:
                     sock.sendto(b"PING", (self.predecessor, 12346))
                     _, _ = sock.recvfrom(1024)
                 except Exception:
+                    logger.warning("Detected failed predecessor %s; entering backward repair", self.predecessor)
                     self.fix_tape_backward()
         self.print_info()
         self.crisis = False
@@ -628,7 +652,7 @@ class ChatServer:
                     self.upper_bound = int(lower_bound) - 1
                     self.request_predecessor_change(successor, self.get_ip())
                     self.successor = successor
-                    logger.info("Promoted backup successor %s", successor)
+                    logger.warning("Promoted backup successor %s after successor failure", successor)
                     return
                 except Exception as e:
                     logger.warning(f"Server {successor} unavailable: {e}")
@@ -701,13 +725,7 @@ class ChatServer:
                 if full_sync_targets:
                     with self.db_lock:
                         user_info = self.db_manager.get_bd_copy()
-                    for user in user_info:
-                        for replic in full_sync_targets:
-                            sock.sendto(
-                                f"REPLIC {user[0]} {user[1]} {user[2]} {user[4]} {user[3]}".encode(),
-                                (replic, 12345),
-                            )
-                            logger.info("Replicated existing user '%s' to %s", user[0], replic)
+                    self.replicate_owned_records(user_info, targets=full_sync_targets)
                 time.sleep(1)
 
 
@@ -735,23 +753,29 @@ class ChatServer:
 
     def replicants_manager(self):
         """Assimilate data from replicant nodes that become unavailable (one-shot)."""
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            for replicant in self.replicants:
-                if not self.ping(replicant):
-                    with self.db_lock:
-                        user_info = self.db_manager.get_replics(replicant)
-                    for user in user_info:
-                        self.place_user_record(
-                            user[0],
-                            user[1],
-                            user[2],
-                            user[3],
-                            user[4],
-                        )
-                    self.replicants.remove(replicant)
-                    with self.db_lock:
-                        self.db_manager.drop_replics(replicant)
-                    logger.info(f"Asimilated data from {replicant}")
+        assimilated_records = []
+        for replicant in list(self.replicants):
+            if not self.ping(replicant):
+                logger.warning("Replica owner %s is unavailable; assimilating replicas", replicant)
+                with self.db_lock:
+                    user_info = self.db_manager.get_replics(replicant)
+                for user in user_info:
+                    resolution = self.place_user_record(
+                        user[0],
+                        user[1],
+                        user[2],
+                        user[3],
+                        user[4],
+                    )
+                    if resolution not in ("forwarded_predecessor", "forwarded_successor", db_manager.STALE, db_manager.IDENTITY_CONFLICT):
+                        assimilated_records.append(user)
+                self.replicants.remove(replicant)
+                with self.db_lock:
+                    self.db_manager.drop_replics(replicant)
+                logger.info("Assimilated %s replica record(s) from %s", len(user_info), replicant)
+        if assimilated_records:
+            logger.warning("Re-replicating %s assimilated record(s)", len(assimilated_records))
+            self.replicate_owned_records(assimilated_records)
 
 
     def info_updater(self):
@@ -803,6 +827,137 @@ class ChatServer:
         logger.info(f"Successors: {self.successors}")
         logger.info(f"Replics: {self.replics}")
         logger.info(f"Replicants: {self.replicants}")
+
+    def send_json_response(self, address, payload, ok=True):
+        status = "OK" if ok else "ERROR"
+        response = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        self.command_socket.sendto(f"{status} {response}".encode(), address)
+
+    def status_payload(self):
+        return {
+            "name": self.name,
+            "ip": self.get_ip(),
+            "range": {"lower": self.lower_bound, "upper": self.upper_bound},
+            "predecessor": self.predecessor,
+            "successor": self.successor,
+            "successors": list(self.successors),
+            "replicas": list(self.replics),
+            "replics": list(self.replics),
+            "replicants": list(self.replicants),
+        }
+
+    def record_hash(self, record):
+        canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def snapshot_payload(self):
+        with self.db_lock:
+            owned_records = self.db_manager.list_owned_records()
+            replica_records = self.db_manager.list_replica_records()
+
+        owner_ip = self.get_ip()
+        owned = []
+        for username, ip, port, public_key, version in owned_records:
+            canonical = {
+                "type": "owned",
+                "username": username,
+                "ip": ip,
+                "port": port,
+                "public_key": public_key,
+                "version": version,
+                "owner": owner_ip,
+            }
+            owned.append({
+                "username": username,
+                "version": version,
+                "owner": owner_ip,
+                "hash": self.record_hash(canonical),
+            })
+
+        replicas = []
+        for username, ip, port, public_key, version, owner in replica_records:
+            canonical = {
+                "type": "replica",
+                "username": username,
+                "ip": ip,
+                "port": port,
+                "public_key": public_key,
+                "version": version,
+                "owner": owner,
+            }
+            replicas.append({
+                "username": username,
+                "version": version,
+                "owner": owner,
+                "hash": self.record_hash(canonical),
+            })
+
+        return {"owned": owned, "replicas": replicas}
+
+    def checksum_payload(self):
+        snapshot = self.snapshot_payload()
+        canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+        return {
+            "checksum": hashlib.sha256(canonical.encode()).hexdigest(),
+            "records": len(snapshot["owned"]) + len(snapshot["replicas"]),
+        }
+
+    def sync_from_owner(self, owner):
+        with self.db_lock:
+            user_info = self.db_manager.get_replics(owner)
+        applied = 0
+        forwarded = 0
+        rejected = 0
+        applied_records = []
+        for user in user_info:
+            resolution = self.place_user_record(
+                user[0],
+                user[1],
+                user[2],
+                user[3],
+                user[4],
+            )
+            if resolution in ("forwarded_predecessor", "forwarded_successor"):
+                forwarded += 1
+            elif resolution in (db_manager.STALE, db_manager.IDENTITY_CONFLICT):
+                rejected += 1
+            else:
+                applied += 1
+                applied_records.append(user)
+        if applied:
+            self.replicate_owned_records(applied_records)
+        logger.info(
+            "SYNC_FROM %s reconciled %s record(s): applied=%s forwarded=%s rejected=%s",
+            owner,
+            len(user_info),
+            applied,
+            forwarded,
+            rejected,
+        )
+        return {
+            "owner": owner,
+            "seen": len(user_info),
+            "applied": applied,
+            "forwarded": forwarded,
+            "rejected": rejected,
+        }
+
+    def replicate_owned_records(self, records, targets=None):
+        targets = list(self.replics if targets is None else targets)
+        if not records or not targets:
+            return 0
+        sent = 0
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for user in records:
+                username, ip, port, public_key, version = user
+                for replic in targets:
+                    sock.sendto(
+                        f"REPLIC {username} {ip} {port} {version} {public_key}".encode(),
+                        (replic, 12345),
+                    )
+                    sent += 1
+                    logger.info("Replicated user '%s' to backup server %s", username, replic)
+        return sent
 
     def rolling_hash(self, s: str, base=911382629, mod=HASH_MOD) -> int:   
         """Compute a rolling hash for string `s` used to distribute keys in the ring."""

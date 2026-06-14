@@ -146,6 +146,10 @@ Commands: `@username` (open chat), `/back` (return to menu), `/quit` (exit).
 | `REPLIC` | Push | `REPLIC <user> <ip> <port> <version> <pubkey_b64>` | Replicate user data |
 | `TAKEOVER` | Push | `TAKEOVER <user> <ip> <port> <version> <pubkey_b64>` | Move an owned record to the correct node |
 | `DROP_REPLICS` | Push | `DROP_REPLICS <owner_ip>` | Drop replica data |
+| `STATUS` | Request/Response | `STATUS` / `OK <json>` | Inspect local topology and replication state |
+| `SNAPSHOT` | Request/Response | `SNAPSHOT` / `OK <json>` | Inspect deterministic owned and replica record hashes |
+| `CHECKSUM` | Request/Response | `CHECKSUM` / `OK <json>` | Return a stable checksum for local state comparison |
+| `SYNC_FROM` | Request/Response | `SYNC_FROM <owner_ip>` / `OK <json>` | Reconcile local replicas for a specific owner |
 
 ### Client-to-Server (UDP, port 12345)
 
