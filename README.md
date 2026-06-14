@@ -282,8 +282,10 @@ CREATE TABLE messages (
 | AES key size | `client/crypto_manager.py` | `256` bits | Symmetric key strength |
 | `FLOCK_LOG_LEVEL` | `shared_logging_utils.py` | `INFO` | Minimum log level for console and file output |
 | `FLOCK_LOG_DIR` | `shared_logging_utils.py` | `<repo>/logs` | Directory for JSON Lines log files |
-| `FLOCK_LOG_MAX_BYTES` | `shared_logging_utils.py` | `5242880` | Rotation size for each log file |
-| `FLOCK_LOG_BACKUP_COUNT` | `shared_logging_utils.py` | `5` | Number of rotated backups to keep |
+| `FLOCK_LOG_MAX_BYTES` | `shared_logging_utils.py` | `1048576` | Rotation size for each log file |
+| `FLOCK_LOG_BACKUP_COUNT` | `shared_logging_utils.py` | `1` | Number of rotated backups to keep |
+| `FLOCK_REPLICA_FULL_SYNC_INTERVAL` | `server/server.py` | `30` seconds | Periodic full replica sync interval |
+| `FLOCK_STATUS_LOG_INTERVAL` | `server/server.py` | `30` seconds | Periodic status log interval; set `0` to disable |
 
 ## Dependencies
 

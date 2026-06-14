@@ -22,8 +22,8 @@ DEFAULT_FIELDS = {
 SENSITIVE_NAMES = ("password", "token", "signature", "private_key", "public_key", "secret", "key")
 SENSITIVE_COMMANDS = {"REGISTER", "REPLIC", "TAKEOVER", "MESSAGE", "PUBKEY_RES"}
 MAX_STRING_LENGTH = 180
-DEFAULT_MAX_BYTES = 5 * 1024 * 1024
-DEFAULT_BACKUP_COUNT = 5
+DEFAULT_MAX_BYTES = 1 * 1024 * 1024
+DEFAULT_BACKUP_COUNT = 1
 
 
 def repo_root() -> Path:

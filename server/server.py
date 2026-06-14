@@ -29,6 +29,8 @@ logger = configure_logger("flock.server", "server.log")
 
 HASH_MOD = 10**18+3
 FAIL_TOLERANCE = int(os.environ.get("FLOCK_FAIL_TOLERANCE", "3"))
+REPLICA_FULL_SYNC_INTERVAL = float(os.environ.get("FLOCK_REPLICA_FULL_SYNC_INTERVAL", "30"))
+STATUS_LOG_INTERVAL = float(os.environ.get("FLOCK_STATUS_LOG_INTERVAL", "30"))
 
 
 class ChatServer:
@@ -66,7 +68,11 @@ class ChatServer:
             "INFO",
             "node_initialized",
             node=self.name,
-            result=f"fail_tolerance={FAIL_TOLERANCE}",
+            result={
+                "fail_tolerance": FAIL_TOLERANCE,
+                "replica_full_sync_interval": REPLICA_FULL_SYNC_INTERVAL,
+                "status_log_interval": STATUS_LOG_INTERVAL,
+            },
         )
 
     def is_valid_username(self, username):
@@ -768,7 +774,7 @@ class ChatServer:
                 self.replics = replics
 
                 full_sync_targets = list(new_replics)
-                if time.time() - last_full_sync >= 5:
+                if time.time() - last_full_sync >= REPLICA_FULL_SYNC_INTERVAL:
                     full_sync_targets = list(replics)
                     last_full_sync = time.time()
 
@@ -832,14 +838,16 @@ class ChatServer:
                 )
         if assimilated_records:
             logger.warning("Re-replicating %s assimilated record(s)", len(assimilated_records))
-            self.replicate_owned_records(assimilated_records)
+            self.replicate_owned_records(assimilated_records, log_level="INFO")
 
 
     def info_updater(self):
         """Periodically print server info for monitoring."""
+        if STATUS_LOG_INTERVAL <= 0:
+            return
         while self.running:
             self.print_info()
-            time.sleep(10)
+            time.sleep(STATUS_LOG_INTERVAL)
 
 
     #region Utils
@@ -995,7 +1003,7 @@ class ChatServer:
         log_event(logger, "INFO", "sync_completed", node=self.name, peer=owner, result=result)
         return result
 
-    def replicate_owned_records(self, records, targets=None):
+    def replicate_owned_records(self, records, targets=None, log_level="DEBUG"):
         targets = list(self.replics if targets is None else targets)
         if not records or not targets:
             return 0
@@ -1011,7 +1019,7 @@ class ChatServer:
                     sent += 1
                     log_event(
                         logger,
-                        "INFO",
+                        log_level,
                         "replica_written",
                         node=self.name,
                         peer=replic,
