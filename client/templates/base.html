@@ -102,6 +102,31 @@
             gap: 10px;
         }
 
+        .nav-links {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .nav-link {
+            text-decoration: none;
+            border-radius: 999px;
+            padding: 8px 12px;
+            border: 1px solid rgba(143, 165, 182, 0.14);
+            background: rgba(255,255,255,0.03);
+            color: var(--muted);
+            font-size: 0.9rem;
+            transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
+        }
+
+        .nav-link:hover {
+            color: var(--text);
+            border-color: rgba(135, 244, 219, 0.24);
+            background: rgba(255,255,255,0.06);
+        }
+
         .pill {
             border-radius: 999px;
             padding: 10px 14px;
@@ -367,6 +392,81 @@
             margin-top: 8px;
         }
 
+        .metric-value-small {
+            font-size: 1rem;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
+
+        .ops-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 14px;
+            margin-bottom: 24px;
+        }
+
+        .ops-card {
+            min-height: 112px;
+            padding: 18px;
+            border-radius: var(--radius-md);
+            background: rgba(4, 12, 20, 0.72);
+            border: 1px solid rgba(143, 165, 182, 0.12);
+        }
+
+        .ops-label {
+            color: var(--muted);
+            font-size: 0.76rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+        }
+
+        .ops-value {
+            margin-top: 10px;
+            font-size: 1.75rem;
+            line-height: 1;
+            font-weight: 800;
+        }
+
+        .ops-foot {
+            color: var(--muted);
+            margin-top: 10px;
+            font-size: 0.88rem;
+            overflow-wrap: anywhere;
+        }
+
+        .compact-list {
+            display: grid;
+            gap: 10px;
+        }
+
+        .compact-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            background: rgba(4, 12, 20, 0.68);
+            border: 1px solid rgba(143, 165, 182, 0.12);
+        }
+
+        .compact-row strong,
+        .compact-row span {
+            overflow-wrap: anywhere;
+        }
+
+        .event-log {
+            max-height: 360px;
+            overflow-y: auto;
+        }
+
+        .event-kind {
+            color: var(--accent-strong);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
         .back-link {
             display: inline-flex;
             align-items: center;
@@ -466,11 +566,18 @@
             .shell { width: min(100vw - 18px, 1120px); padding-top: 16px; }
             .topbar { flex-direction: column; align-items: flex-start; }
             .status-pills { justify-content: flex-start; }
+            .nav-links { justify-content: flex-start; }
             .grid-2 { grid-template-columns: 1fr; }
+            .ops-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .hero-title { max-width: none; }
             .chat-shell { min-height: calc(100vh - 70px); }
             .composer { flex-direction: column; align-items: stretch; }
             .message { max-width: 88%; }
+        }
+
+        @media (max-width: 520px) {
+            .ops-grid { grid-template-columns: 1fr; }
+            .compact-row { align-items: flex-start; flex-direction: column; }
         }
     </style>
 </head>
@@ -495,6 +602,13 @@
                 <div class="pill pill-accent"><strong>Sesion</strong> protegida</div>
                 {% endif %}
             </div>
+            <nav class="nav-links" aria-label="Navegacion principal">
+                <a class="nav-link" href="/servers">Servidores</a>
+                {% if authenticated %}
+                <a class="nav-link" href="/chats">Chats</a>
+                <a class="nav-link" href="/diagnostics">Diagnostico</a>
+                {% endif %}
+            </nav>
         </header>
         {% block content %}{% endblock %}
     </div>

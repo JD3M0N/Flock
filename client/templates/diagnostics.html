@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block title %}Flock | Diagnostico{% endblock %}
+{% block content %}
+<section class="hero panel">
+    <div class="hero-kicker">Panel de defensa</div>
+    <h2 class="hero-title">Estado operativo del cliente.</h2>
+    <p class="hero-text">
+        Supervisa la sesion local, el gestor activo, la cola offline y los eventos visibles para demostrar funcionamiento y recuperacion.
+    </p>
+    <div class="btn-row">
+        <button class="btn btn-primary" id="refreshBtn" type="button">Actualizar</button>
+        <button class="btn btn-secondary" id="pingBtn" type="button">Probar gestor</button>
+        <button class="btn btn-secondary" id="retryBtn" type="button">Reintentar pendientes</button>
+    </div>
+    <div id="feedback" class="status hidden"></div>
+</section>
+
+<section class="ops-grid">
+    <div class="ops-card">
+        <div class="ops-label">Servidor</div>
+        <div class="ops-value" id="serverState">--</div>
+        <div class="ops-foot" id="serverMeta">Sin datos</div>
+    </div>
+    <div class="ops-card">
+        <div class="ops-label">Pendientes</div>
+        <div class="ops-value" id="pendingTotal">0</div>
+        <div class="ops-foot">Mensajes en cola local</div>
+    </div>
+    <div class="ops-card">
+        <div class="ops-label">Contactos</div>
+        <div class="ops-value" id="contactCount">0</div>
+        <div class="ops-foot">Resoluciones cacheadas</div>
+    </div>
+    <div class="ops-card">
+        <div class="ops-label">Puerto P2P</div>
+        <div class="ops-value" id="messagePort">--</div>
+        <div class="ops-foot">Socket UDP del cliente</div>
+    </div>
+</section>
+
+<section class="grid grid-2">
+    <div class="panel panel-strong">
+        <div class="card">
+            <h3 class="section-title">Cola de entrega local</h3>
+            <p class="section-copy">Los mensajes listados aqui se reintentan desde el cliente, sin almacenamiento centralizado.</p>
+            <div id="pendingList" class="compact-list"></div>
+        </div>
+    </div>
+
+    <aside class="metrics">
+        <div class="metric">
+            <div class="metric-label">Usuario</div>
+            <div class="metric-value metric-value-small" id="usernameValue">{{ username }}</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Conversaciones</div>
+            <div class="metric-value" id="chatCount">0</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">No leidos</div>
+            <div class="metric-value" id="unreadTotal">0</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Workers</div>
+            <div class="metric-value metric-value-small" id="workersState">--</div>
+        </div>
+    </aside>
+</section>
+
+<section class="panel panel-strong" style="margin-top: 24px;">
+    <div class="card">
+        <h3 class="section-title">Eventos recientes</h3>
+        <p class="section-copy">Registro compacto de acciones visibles desde la interfaz durante la demostracion.</p>
+        <div id="eventLog" class="compact-list event-log"></div>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const socket = io();
+
+    const refreshBtn = document.getElementById('refreshBtn');
+    const pingBtn = document.getElementById('pingBtn');
+    const retryBtn = document.getElementById('retryBtn');
+
+    refreshBtn.addEventListener('click', loadDiagnostics);
+    pingBtn.addEventListener('click', function() {
+        setBusy(pingBtn, true);
+        socket.emit('check_server', withCsrf({}));
+    });
+    retryBtn.addEventListener('click', function() {
+        setBusy(retryBtn, true);
+        socket.emit('retry_pending', withCsrf({}));
+    });
+
+    socket.on('request_error', ({error}) => showFeedback(error, true));
+    socket.on('auth_required', ({redirect}) => { window.location.href = redirect || '/register'; });
+    socket.on('diagnostics_loaded', renderDiagnostics);
+    socket.on('diagnostic_event', function() { loadDiagnostics(); });
+    socket.on('server_check_result', function(result) {
+        setBusy(pingBtn, false);
+        showFeedback(result.message, !result.ok, result.ok);
+    });
+    socket.on('pending_retry_result', function(result) {
+        setBusy(retryBtn, false);
+        showFeedback(
+            `Reintento completado: ${result.delivered} entregado(s), ${result.failed} pendiente(s).`,
+            result.failed > 0,
+            result.failed === 0
+        );
+    });
+
+    function loadDiagnostics() {
+        setBusy(refreshBtn, true);
+        socket.emit('load_diagnostics', withCsrf({}));
+    }
+
+    function renderDiagnostics(data) {
+        setBusy(refreshBtn, false);
+        setBusy(pingBtn, false);
+        setBusy(retryBtn, false);
+
+        const server = data.server || {};
+        const client = data.client || {};
+        const pending = data.pending || {};
+        const isServerReady = Boolean(server.name && server.ip && !server.down);
+
+        document.getElementById('serverState').textContent = isServerReady ? 'Activo' : (server.down ? 'Caido' : 'Sin nodo');
+        document.getElementById('serverMeta').textContent = server.ip
+            ? `${server.name || 'nodo'} @ ${server.ip}:${server.port || 12345}`
+            : 'No hay gestor conectado';
+        document.getElementById('pendingTotal').textContent = pending.total || 0;
+        document.getElementById('contactCount').textContent = client.contacts_cached || 0;
+        document.getElementById('messagePort').textContent = client.message_port || '--';
+        document.getElementById('chatCount').textContent = client.chat_count || 0;
+        document.getElementById('unreadTotal').textContent = client.unread_total || 0;
+        document.getElementById('workersState').textContent = client.background_workers ? 'Activos' : 'Detenidos';
+
+        renderPending(pending.by_recipient || []);
+        renderEvents(data.events || []);
+    }
+
+    function renderPending(items) {
+        const list = document.getElementById('pendingList');
+        list.innerHTML = '';
+        if (items.length === 0) {
+            list.innerHTML = '<div class="status">No hay mensajes pendientes. La cola local esta limpia.</div>';
+            return;
+        }
+
+        items.forEach(function(item) {
+            const row = document.createElement('div');
+            row.className = 'compact-row';
+            row.innerHTML =
+                '<strong>@' + escapeHtml(item.recipient) + '</strong>' +
+                '<span class="pill pill-accent">' + item.count + ' pendiente(s)</span>';
+            list.appendChild(row);
+        });
+    }
+
+    function renderEvents(events) {
+        const log = document.getElementById('eventLog');
+        log.innerHTML = '';
+        if (events.length === 0) {
+            log.innerHTML = '<div class="status">Aun no hay eventos en esta sesion web.</div>';
+            return;
+        }
+
+        events.forEach(function(event) {
+            const row = document.createElement('div');
+            row.className = 'compact-row';
+            row.innerHTML =
+                '<div>' +
+                    '<div class="event-kind">' + escapeHtml(event.kind || 'evento') + '</div>' +
+                    '<strong>' + escapeHtml(event.message || '') + '</strong>' +
+                '</div>' +
+                '<span class="muted">' + escapeHtml(event.time || '') + '</span>';
+            log.appendChild(row);
+        });
+    }
+
+    function setBusy(button, busy) {
+        button.disabled = busy;
+    }
+
+    function showFeedback(message, isError = false, isSuccess = false) {
+        const feedback = document.getElementById('feedback');
+        if (!message) {
+            feedback.className = 'status hidden';
+            feedback.textContent = '';
+            return;
+        }
+
+        feedback.className = 'status';
+        if (isError) feedback.classList.add('status-error');
+        if (isSuccess) feedback.classList.add('status-success');
+        feedback.textContent = message;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    loadDiagnostics();
+</script>
+{% endblock %}

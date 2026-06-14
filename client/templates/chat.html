@@ -10,7 +10,10 @@
             <h2 class="section-title" style="margin-top: 6px; margin-bottom: 4px;">@{{ contact }}</h2>
             <p class="muted">Mensajeria directa con persistencia local y envio P2P.</p>
         </div>
-        <div class="pill pill-accent">E2E activo</div>
+        <div class="status-pills">
+            <div class="pill pill-accent">E2E activo</div>
+            <a class="pill" href="/diagnostics" style="text-decoration: none;">Diagnostico</a>
+        </div>
     </header>
 
     <div class="messages-area" id="messages"></div>
@@ -53,7 +56,7 @@
 
     socket.on('message_sent', function(data) {
         if (data.contact !== contact) return;
-        addMessage(username, data.text, '');
+        addMessage(username, data.text, '', data.queued ? 'Pendiente local' : 'Enviado');
         input.value = '';
         input.style.height = '56px';
         sendBtn.disabled = false;
@@ -78,12 +81,12 @@
         input.style.height = Math.min(input.scrollHeight, 180) + 'px';
     });
 
-    function addMessage(author, text, date) {
+    function addMessage(author, text, date, state = '') {
         const div = document.createElement('div');
         div.className = 'message ' + (author === username ? 'message-own' : 'message-other');
         div.innerHTML =
             '<div>' + escapeHtml(text) + '</div>' +
-            (date ? '<div class="message-date">' + escapeHtml(date) + '</div>' : '');
+            (date || state ? '<div class="message-date">' + escapeHtml([date, state].filter(Boolean).join(' - ')) + '</div>' : '');
         messagesDiv.appendChild(div);
     }
 

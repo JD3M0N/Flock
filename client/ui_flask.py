@@ -1,10 +1,25 @@
 import os
 import secrets
+import sys
+import time
+import importlib.util
+from pathlib import Path
 
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from flask_socketio import SocketIO, emit
 
-import client
+CLIENT_DIR = Path(__file__).resolve().parent
+if str(CLIENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CLIENT_DIR))
+
+try:
+    import client
+    if not hasattr(client, "chat_client"):
+        raise ImportError("Loaded client package instead of client.py")
+except ImportError:
+    spec = importlib.util.spec_from_file_location("flock_client_core", CLIENT_DIR / "client.py")
+    client = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(client)
 
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -15,10 +30,24 @@ app.config["SESSION_COOKIE_SECURE"] = False
 socketio = SocketIO(app, async_mode="threading")
 
 chat = client.chat_client()
+recent_ui_events = []
+
+
+def record_ui_event(kind, message, **details):
+    event = {
+        "kind": kind,
+        "message": message,
+        "time": time.strftime("%H:%M:%S"),
+        "details": details,
+    }
+    recent_ui_events.insert(0, event)
+    del recent_ui_events[30:]
+    socketio.emit("diagnostic_event", event)
 
 
 def on_new_message(sender, text):
     socketio.emit("new_message", {"sender": sender, "text": text})
+    record_ui_event("message_received", f"Mensaje recibido de @{sender}", sender=sender)
 
 
 chat.on_message_received = on_new_message
@@ -69,6 +98,52 @@ def authenticate_request(username, password):
 
 def is_authenticated():
     return bool(session.get("authenticated") and session.get("username") and chat.username == session.get("username"))
+
+
+def build_client_diagnostics():
+    server_ip = chat.server_address[0] if chat.server_address else None
+    server_port = chat.server_address[1] if chat.server_address else None
+    pending_summary = []
+    pending_total = 0
+    chat_count = 0
+    unread_total = 0
+    pending_messages = []
+
+    if chat.username:
+        pending_summary = [
+            {"recipient": recipient, "count": count}
+            for recipient, count in chat.db.get_pending_resume()
+        ]
+        pending_total = sum(item["count"] for item in pending_summary)
+        pending_messages = [
+            {"id": message_id, "recipient": recipient}
+            for message_id, recipient, _payload in chat.db.get_pending_messages()
+        ]
+        chat_count = len(chat.db.get_chat_previews(chat.username))
+        unread_total = sum(count for _author, count in chat.db.get_unseen_resume(chat.username))
+
+    return {
+        "username": chat.username,
+        "server": {
+            "name": chat.server_name,
+            "ip": server_ip,
+            "port": server_port,
+            "down": chat.server_down,
+        },
+        "client": {
+            "message_port": chat.message_socket.getsockname()[1],
+            "background_workers": chat.background_started,
+            "contacts_cached": len(chat.contact_list),
+            "chat_count": chat_count,
+            "unread_total": unread_total,
+        },
+        "pending": {
+            "total": pending_total,
+            "by_recipient": pending_summary,
+            "messages": pending_messages,
+        },
+        "events": recent_ui_events[:10],
+    }
 
 
 def require_authenticated_socket(data):
@@ -179,6 +254,19 @@ def private_chat(contact):
     )
 
 
+@app.route("/diagnostics")
+def diagnostics():
+    if not is_authenticated():
+        return redirect(url_for("register"))
+    return render_template(
+        "diagnostics.html",
+        username=chat.username,
+        connected_server=chat.server_name,
+        connected_ip=chat.server_address[0] if chat.server_address else None,
+        authenticated=True,
+    )
+
+
 @socketio.on("discover_servers")
 def handle_discover(data):
     ensure_csrf_token()
@@ -197,6 +285,7 @@ def handle_connect(data):
         emit("request_error", {"error": "Invalid server selection."})
         return
     chat.connect_to_server((data["name"], data["ip"]))
+    record_ui_event("server_connected", f"Cliente conectado a {data['name']}", ip=data["ip"])
     emit("server_connected", {"name": data["name"]})
 
 
@@ -256,6 +345,9 @@ def handle_send(data):
     if not chat.send_message(contact, message):
         chat.add_to_pending_list(contact, message)
         queued = True
+        record_ui_event("message_queued", f"Mensaje para @{contact} en cola local", recipient=contact)
+    else:
+        record_ui_event("message_sent", f"Mensaje enviado a @{contact}", recipient=contact)
     emit("message_sent", {"contact": contact, "text": text, "queued": queued})
 
 
@@ -266,6 +358,58 @@ def handle_mark_seen(data):
     contact = data.get("contact", "").strip()
     if contact:
         chat.db.set_messages_as_seen(chat.username, contact)
+
+
+@socketio.on("load_diagnostics")
+def handle_load_diagnostics(data):
+    if not require_authenticated_socket(data):
+        return
+    emit("diagnostics_loaded", build_client_diagnostics())
+
+
+@socketio.on("check_server")
+def handle_check_server(data):
+    if not require_authenticated_socket(data):
+        return
+    if not chat.server_address:
+        emit("server_check_result", {"ok": False, "message": "No hay servidor activo."})
+        return
+
+    response = chat.send_command("PING")
+    ok = response == "PONG"
+    if ok:
+        chat.server_down = False
+        record_ui_event("server_ping", "El gestor activo respondio PONG")
+        emit("server_check_result", {"ok": True, "message": "El gestor activo respondio PONG."})
+    else:
+        record_ui_event("server_ping_failed", "El gestor activo no respondio correctamente", response=response)
+        emit("server_check_result", {"ok": False, "message": response})
+    emit("diagnostics_loaded", build_client_diagnostics())
+
+
+@socketio.on("retry_pending")
+def handle_retry_pending(data):
+    if not require_authenticated_socket(data):
+        return
+
+    delivered = 0
+    failed = 0
+    for message_id, recipient, payload in chat.db.get_pending_messages():
+        if chat.send_message(recipient, payload):
+            chat.db.delete_pending_message(message_id)
+            chat._remove_pending_cache_item(recipient, payload)
+            delivered += 1
+        else:
+            failed += 1
+
+    record_ui_event(
+        "pending_retry",
+        f"Reintento manual: {delivered} entregado(s), {failed} pendiente(s)",
+        delivered=delivered,
+        failed=failed,
+    )
+    emit("pending_retry_result", {"delivered": delivered, "failed": failed})
+    emit("diagnostics_loaded", build_client_diagnostics())
 
 
 if __name__ == "__main__":

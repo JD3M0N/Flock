@@ -76,6 +76,7 @@ env.bak/
 
 # Logs and databases
 *.log
+*.log.*
 *.sqlite3
 *.db
 server/db/
