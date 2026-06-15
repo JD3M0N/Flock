@@ -13,13 +13,32 @@ DEFAULT_FIELDS = {
     "node": None,
     "event": "log",
     "correlation_id": None,
+    "session_id": None,
+    "operation_id": None,
+    "phase": None,
     "peer": None,
+    "peer_ip": None,
+    "peer_port": None,
     "username": None,
     "version": None,
     "range": None,
     "result": None,
+    "duration_ms": None,
+    "queue_count": None,
+    "advertised_ip": None,
+    "reason": None,
 }
-SENSITIVE_NAMES = ("password", "token", "signature", "private_key", "public_key", "secret", "key")
+SENSITIVE_NAMES = (
+    "password",
+    "token",
+    "signature",
+    "private_key",
+    "public_key",
+    "secret",
+    "key",
+    "cookie",
+    "csrf",
+)
 SENSITIVE_COMMANDS = {"REGISTER", "REPLIC", "TAKEOVER", "MESSAGE", "PUBKEY_RES"}
 MAX_STRING_LENGTH = 180
 DEFAULT_MAX_BYTES = 1 * 1024 * 1024
@@ -140,7 +159,23 @@ class HumanConsoleFormatter(logging.Formatter):
         context = []
         if event and event != "log":
             context.append(f"event={event}")
-        for key in ("node", "peer", "username", "version", "range", "result"):
+        for key in (
+            "node",
+            "session_id",
+            "operation_id",
+            "phase",
+            "peer",
+            "peer_ip",
+            "peer_port",
+            "username",
+            "version",
+            "range",
+            "duration_ms",
+            "queue_count",
+            "advertised_ip",
+            "reason",
+            "result",
+        ):
             value = flock_fields.get(key)
             if value is not None:
                 context.append(f"{key}={value}")

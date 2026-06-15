@@ -84,6 +84,17 @@ def test_server_validates_username_and_addresses(monkeypatch):
         teardown_server(server)
 
 
+def test_server_get_ip_prefers_explicit_node_ip(monkeypatch):
+    monkeypatch.setattr(server_module.socket, "socket", DummySocket)
+    server = server_module.ChatServer("node-test")
+    try:
+        monkeypatch.setenv("FLOCK_NODE_IP", "192.0.2.44")
+
+        assert server.get_ip() == "192.0.2.44"
+    finally:
+        teardown_server(server)
+
+
 def test_server_rolling_hash_is_stable_and_in_range(monkeypatch):
     server = build_server(monkeypatch)
     try:

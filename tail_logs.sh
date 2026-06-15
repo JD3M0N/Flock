@@ -49,17 +49,24 @@ if [ "$RAW" = "1" ] || ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
+printf '%-19s %-5s %-8s %-22s %-16s %-22s %-20s %s\n' \
+  "time" "lvl" "comp" "event" "user" "peer" "phase/reason" "result"
 tail -q -F $existing_files | jq -r '
-  def show($v): if $v == null then "-" elif ($v|type) == "object" or ($v|type) == "array" then ($v|tojson) else ($v|tostring) end;
+  def show($v):
+    if $v == null then "-"
+    elif ($v|type) == "object" or ($v|type) == "array" then ($v|tojson)
+    else ($v|tostring)
+    end;
+  def short($v; $n):
+    (show($v)) as $s | if ($s|length) > $n then (($s[0:($n-3)]) + "...") else $s end;
   [
-    (.timestamp // "-"),
+    ((.timestamp // "-") | sub("\\+00:00$"; "Z") | .[0:19]),
     (.level // "-"),
     (.component // "-"),
-    (.node // "-"),
     (.event // "-"),
-    (.peer // "-"),
-    (.username // "-"),
-    show(.range),
-    show(.result)
+    (.username // .node // "-"),
+    ((.peer // ((.peer_ip // "-") + ":" + ((.peer_port // "-")|tostring))) | tostring),
+    (((.phase // "-")|tostring) + "/" + ((.reason // "-")|tostring)),
+    short(.result; 90)
   ] | @tsv
-'
+' | awk -F '\t' '{printf "%-19s %-5s %-8s %-22s %-16s %-22s %-20s %s\n", $1, $2, $3, $4, $5, $6, $7, $8}'

@@ -5,11 +5,12 @@
     <div>
         <div class="page-kicker">Conversaciones</div>
         <h2 class="page-title">Chats locales</h2>
-        <p class="page-copy">Mensajes P2P con historial persistido en este cliente.</p>
+        <p class="page-copy">Historial local y entrega P2P.</p>
     </div>
     <div class="toolbar">
         <a class="btn btn-secondary" href="/diagnostics">Defensa</a>
         <form action="/logout" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn btn-danger" type="submit">Cerrar sesion</button>
         </form>
     </div>
@@ -58,7 +59,7 @@
 
         if (chats.length === 0) {
             feedback.className = 'status';
-            feedback.textContent = 'Sin conversaciones todavia. Escribe un usuario para abrir el primer chat.';
+            feedback.textContent = 'Sin conversaciones. Escribe un usuario para abrir chat.';
             return;
         }
 

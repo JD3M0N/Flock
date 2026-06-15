@@ -5,7 +5,7 @@
     <div>
         <div class="page-kicker">Conexion inicial</div>
         <h2 class="page-title">Selecciona un nodo Flock</h2>
-        <p class="page-copy">Elige un servidor activo para registrar presencia y resolver contactos.</p>
+        <p class="page-copy">Seleccion de gestor para presencia y resolucion.</p>
     </div>
     <button class="btn btn-primary" id="discoverBtn" type="button" onclick="discover()">Buscar nodos</button>
 </section>
@@ -15,7 +15,7 @@
         <div class="panel-body">
             <h3 class="section-title">Nodos disponibles</h3>
             <div id="status" class="status hidden"></div>
-            <div id="serverList" class="server-list" style="margin-top: 12px;"></div>
+            <div id="serverList" class="server-list"></div>
         </div>
     </div>
 
@@ -79,7 +79,7 @@
                     '<div class="server-name">' + escapeHtml(server.name) + '</div>' +
                     '<div class="server-meta">' + escapeHtml(server.ip) + '</div>' +
                 '</div>' +
-                '<div class="pill pill-accent">Conectar</div>';
+                '<div class="pill pill-strong">Conectar</div>';
             item.onclick = function() {
                 btn.disabled = true;
                 showStatus('Conectando con el nodo seleccionado...');

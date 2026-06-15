@@ -8,6 +8,7 @@ import random
 import os
 import base64
 import hashlib
+import ipaddress
 # from termcolor import colored as col
 import struct
 from logging_utils import configure_logger, log_event, summarize_command
@@ -90,6 +91,36 @@ class ChatServer:
             return 0 < int(port) <= 65535
         except Exception:
             return False
+
+    def _valid_ipv4(self, ip):
+        try:
+            parsed = ipaddress.ip_address(ip)
+            return parsed.version == 4 and not parsed.is_unspecified
+        except ValueError:
+            return False
+
+    def _is_loopback_ip(self, ip):
+        try:
+            return ipaddress.ip_address(ip).is_loopback
+        except ValueError:
+            return False
+
+    def _hostname_candidates(self):
+        candidates = []
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = info[4][0]
+                if ip not in candidates:
+                    candidates.append(ip)
+        except Exception:
+            pass
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+            if ip not in candidates:
+                candidates.append(ip)
+        except Exception:
+            pass
+        return candidates
 
 
     
@@ -294,10 +325,33 @@ class ChatServer:
                 elif message.startswith("REGISTER"):
                     payload = self.parse_register_message(message, address)
                     if payload is None:
-                        logger.warning("Rejected malformed REGISTER payload from %s", address)
+                        log_event(
+                            logger,
+                            "WARNING",
+                            "register_rejected",
+                            node=self.name,
+                            peer=f"{address[0]}:{address[1]}",
+                            peer_ip=address[0],
+                            peer_port=address[1],
+                            phase="parse",
+                            reason="malformed_payload",
+                        )
                         continue
+                    log_event(
+                        logger,
+                        "INFO",
+                        "register_received",
+                        node=self.name,
+                        peer=f"{address[0]}:{address[1]}",
+                        peer_ip=address[0],
+                        peer_port=address[1],
+                        phase="receive",
+                        username=payload["username"],
+                        version=payload["version"],
+                        advertised_ip=payload["ip"],
+                        result={"advertised_port": payload["port"]},
+                    )
                     self.register_user(**payload)
-                    logger.info("REGISTER request for user '%s' handled/forwarded", payload["username"])
 
                 elif message.startswith("RESOLVE"):
                     try:
@@ -306,8 +360,19 @@ class ChatServer:
                         _, username = message.split(" ")
                         answer_to_ip = address[0]
                         answer_to_port = address[1]
+                    log_event(
+                        logger,
+                        "INFO",
+                        "resolve_received",
+                        node=self.name,
+                        peer=f"{address[0]}:{address[1]}",
+                        peer_ip=address[0],
+                        peer_port=address[1],
+                        phase="receive",
+                        username=username,
+                        result={"answer_to": f"{answer_to_ip}:{answer_to_port}"},
+                    )
                     self.resolve_user(answer_to_ip, int(answer_to_port), username)
-                    logger.info(f"RESOLVE request for user '{username}' processed")
 
                 elif message.startswith("SUCC"):
                     _, successors = message.split(" ", 1)
@@ -499,7 +564,21 @@ class ChatServer:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 if answer_to_ip != ".":
                     sock.sendto(b"ERROR Invalid registration payload", (answer_to_ip, answer_to_port))
-            logger.warning(f"Rejected invalid REGISTER payload for username='{username}' ip='{ip}' port='{port}'")
+            log_event(
+                logger,
+                "WARNING",
+                "register_rejected",
+                node=self.name,
+                peer=f"{answer_to_ip}:{answer_to_port}",
+                peer_ip=answer_to_ip,
+                peer_port=answer_to_port,
+                phase="validate",
+                username=username,
+                version=version,
+                advertised_ip=ip,
+                reason="invalid_payload",
+                result={"advertised_port": port},
+            )
             return
 
         username_hash = self.rolling_hash(username)
@@ -511,14 +590,40 @@ class ChatServer:
                     f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port} {version} {public_key} {signature}".encode(),
                     (self.predecessor, 12345),
                 )
-                logger.info(f"Forwarded REGISTER for '{username}' to predecessor {self.predecessor}")
+                log_event(
+                    logger,
+                    "INFO",
+                    "register_forwarded",
+                    node=self.name,
+                    peer=self.predecessor,
+                    peer_ip=self.predecessor,
+                    peer_port=12345,
+                    phase="forward_predecessor",
+                    username=username,
+                    version=version,
+                    advertised_ip=ip,
+                    result={"hash": username_hash, "range": {"lower": self.lower_bound, "upper": self.upper_bound}},
+                )
 
             elif username_hash > self.upper_bound:
                 sock.sendto(
                     f"REGISTER {answer_to_ip} {answer_to_port} {username} {ip} {port} {version} {public_key} {signature}".encode(),
                     (self.successor, 12345),
                 )
-                logger.info(f"Forwarded REGISTER for '{username}' to successor {self.successor}")
+                log_event(
+                    logger,
+                    "INFO",
+                    "register_forwarded",
+                    node=self.name,
+                    peer=self.successor,
+                    peer_ip=self.successor,
+                    peer_port=12345,
+                    phase="forward_successor",
+                    username=username,
+                    version=version,
+                    advertised_ip=ip,
+                    result={"hash": username_hash, "range": {"lower": self.lower_bound, "upper": self.upper_bound}},
+                )
             else:
                 with self.db_lock:
                     if not self.verify_registration_signature(public_key, payload, signature):
@@ -541,7 +646,21 @@ class ChatServer:
                 if answer_to_ip != '.':
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
                 if not response.startswith("OK"):
-                    logger.warning(response)
+                    log_event(
+                        logger,
+                        "WARNING",
+                        "register_rejected",
+                        node=self.name,
+                        peer=f"{answer_to_ip}:{answer_to_port}",
+                        peer_ip=answer_to_ip,
+                        peer_port=answer_to_port,
+                        phase="store",
+                        username=username,
+                        version=version,
+                        advertised_ip=ip,
+                        reason=response,
+                        result={"hash": username_hash, "advertised_port": port},
+                    )
                     return
                 self.replicate_owned_records([(username, ip, port, public_key, version)])
                 log_event(
@@ -550,10 +669,14 @@ class ChatServer:
                     "register_accepted",
                     node=self.name,
                     peer=f"{answer_to_ip}:{answer_to_port}",
+                    peer_ip=answer_to_ip,
+                    peer_port=answer_to_port,
+                    phase="store",
                     username=username,
                     version=version,
+                    advertised_ip=ip,
                     range={"lower": self.lower_bound, "upper": self.upper_bound},
-                    result="stored_and_replicated",
+                    result={"status": "stored_and_replicated", "advertised_port": port, "hash": username_hash},
                 )
 
 
@@ -567,14 +690,36 @@ class ChatServer:
                     f"RESOLVE {answer_to_ip} {answer_to_port} {username}".encode(),
                     (self.predecessor, 12345),
                 )
-                logger.info(f"Forwarded RESOLVE for '{username}' to predecessor {self.predecessor}")
+                log_event(
+                    logger,
+                    "INFO",
+                    "resolve_forwarded",
+                    node=self.name,
+                    peer=self.predecessor,
+                    peer_ip=self.predecessor,
+                    peer_port=12345,
+                    phase="forward_predecessor",
+                    username=username,
+                    result={"answer_to": f"{answer_to_ip}:{answer_to_port}", "hash": username_hash},
+                )
 
             elif username_hash > self.upper_bound:
                 sock.sendto(
                     f"RESOLVE {answer_to_ip} {answer_to_port} {username}".encode(),
                     (self.successor, 12345),
                 )
-                logger.info(f"Forwarded RESOLVE for '{username}' to successor {self.successor}")
+                log_event(
+                    logger,
+                    "INFO",
+                    "resolve_forwarded",
+                    node=self.name,
+                    peer=self.successor,
+                    peer_ip=self.successor,
+                    peer_port=12345,
+                    phase="forward_successor",
+                    username=username,
+                    result={"answer_to": f"{answer_to_ip}:{answer_to_port}", "hash": username_hash},
+                )
 
             else:
                 with self.db_lock:
@@ -583,11 +728,41 @@ class ChatServer:
                     ip, port, public_key, version = address
                     response = f"OK {ip} {port} {public_key} {version}"
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
-                    logger.info(f"Resolved address of user '{username}', ({ip}:{port})")
+                    log_event(
+                        logger,
+                        "INFO",
+                        "resolve_completed",
+                        node=self.name,
+                        peer=f"{answer_to_ip}:{answer_to_port}",
+                        peer_ip=answer_to_ip,
+                        peer_port=answer_to_port,
+                        phase="resolve",
+                        username=username,
+                        version=version,
+                        advertised_ip=ip,
+                        result={
+                            "status": "OK",
+                            "answer_to": f"{answer_to_ip}:{answer_to_port}",
+                            "resolved": f"{ip}:{port}",
+                            "hash": username_hash,
+                        },
+                    )
                 else:
                     response = f"ERROR 404 User not found"
                     sock.sendto(response.encode(), (answer_to_ip, answer_to_port))
-                    logger.warning(f"User not found during RESOLVE: {username}")
+                    log_event(
+                        logger,
+                        "WARNING",
+                        "resolve_failed",
+                        node=self.name,
+                        peer=f"{answer_to_ip}:{answer_to_port}",
+                        peer_ip=answer_to_ip,
+                        peer_port=answer_to_port,
+                        phase="resolve",
+                        username=username,
+                        reason="user_not_found",
+                        result={"hash": username_hash},
+                    )
 
 
     def process_join_request(self, joinee):
@@ -860,9 +1035,56 @@ class ChatServer:
 
     #region Utils
 
-    def get_ip(self):
-        """Return the IP address of the current host."""
-        return socket.gethostbyname(socket.gethostname())
+    def get_ip(self, target_ip=None):
+        """Return the best IP this server should advertise to other nodes.
+
+        `FLOCK_NODE_IP` is the explicit override for multi-machine demos.
+        `FLOCK_PUBLIC_IP` is accepted as a compatibility alias.
+        """
+        for env_name in ("FLOCK_NODE_IP", "FLOCK_PUBLIC_IP"):
+            explicit_ip = os.environ.get(env_name, "").strip()
+            if explicit_ip:
+                if self._valid_ipv4(explicit_ip):
+                    return explicit_ip
+                log_event(
+                    logger,
+                    "WARNING",
+                    "node_ip_invalid",
+                    node=self.name,
+                    advertised_ip=explicit_ip,
+                    reason=f"{env_name} is not a valid IPv4 address",
+                )
+
+        if target_ip:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.connect((target_ip, 12345))
+                    candidate = sock.getsockname()[0]
+                    if self._valid_ipv4(candidate) and (
+                        not self._is_loopback_ip(candidate) or self._is_loopback_ip(target_ip)
+                    ):
+                        return candidate
+            except Exception:
+                pass
+
+        for candidate in self._hostname_candidates():
+            if self._valid_ipv4(candidate) and not self._is_loopback_ip(candidate):
+                return candidate
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect(("10.255.255.255", 1))
+                candidate = sock.getsockname()[0]
+                if self._valid_ipv4(candidate) and not self._is_loopback_ip(candidate):
+                    return candidate
+        except Exception:
+            pass
+
+        for candidate in self._hostname_candidates():
+            if self._valid_ipv4(candidate):
+                return candidate
+
+        return "127.0.0.1"
     
 
     def ping(self, ip, timeout=0.1):

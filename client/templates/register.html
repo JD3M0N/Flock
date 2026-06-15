@@ -5,9 +5,9 @@
     <div>
         <div class="page-kicker">Identidad local</div>
         <h2 class="page-title">Entra o crea tu perfil</h2>
-        <p class="page-copy">La contrasena protege tus claves privadas en este dispositivo.</p>
+        <p class="page-copy">Clave local cifrada en este dispositivo.</p>
     </div>
-    <span class="pill pill-accent" id="modePill">Comprobando perfil</span>
+    <span class="pill pill-strong" id="modePill">Comprobando perfil</span>
 </section>
 
 <section class="grid grid-2">
@@ -30,9 +30,9 @@
             <div id="feedback" class="status hidden"></div>
             <p class="footer-note" id="modeNote">
                 {% if has_profile %}
-                Se detecto un perfil local existente para este usuario en este dispositivo.
+                Perfil local detectado.
                 {% else %}
-                Si el perfil no existe todavia, esta contrasena se usara para crearlo y cifrar tu clave privada.
+                Si no existe, se creara al continuar.
                 {% endif %}
             </p>
         </div>
@@ -114,8 +114,8 @@
         const exists = localProfiles.has(usernameInput.value.trim());
         document.getElementById('modePill').textContent = exists ? 'Modo: entrar' : 'Modo: crear perfil';
         document.getElementById('modeNote').textContent = exists
-            ? 'Se encontro un perfil local para este usuario. Se intentara iniciar sesion.'
-            : 'No existe un perfil local todavia. Se creara automaticamente al continuar.';
+            ? 'Perfil local detectado. Se intentara iniciar sesion.'
+            : 'No existe perfil local. Se creara al continuar.';
     }
 
     syncProfileHint();

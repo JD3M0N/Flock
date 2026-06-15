@@ -91,6 +91,13 @@ cd server
 python server.py node1
 ```
 
+For a multi-machine demo, make the server advertise the LAN IP that the other PC can reach:
+
+```bash
+cd server
+FLOCK_NODE_IP=<SERVER_LAN_IP> python server.py node1
+```
+
 Additional servers on the same network join the ring automatically:
 
 ```bash
@@ -105,12 +112,21 @@ cd client
 python ui_flask.py
 ```
 
+For a multi-machine demo, make each client advertise its reachable LAN IP for P2P messages:
+
+```bash
+cd client
+FLOCK_PUBLIC_IP=<CLIENT_LAN_IP> python ui_flask.py
+```
+
 Open `http://localhost:5000` in a browser. The flow is:
 
 1. **Server discovery** -- click "Search for servers"
 2. **Registration** -- choose a username
 3. **Chat list** -- see existing conversations and unread counts
 4. **Chat** -- send and receive messages in real time
+
+The Flask UI supports multiple browser sessions in the same process. Each session owns its own client socket, login state and diagnostics, so two users can be demonstrated from different browsers without overwriting each other.
 
 For a second client on the same machine, use a different port:
 
@@ -142,6 +158,8 @@ Flock writes server, client and console logs as JSON Lines under `logs/` by defa
 ```
 
 Use `./tail_logs.sh --raw` to show the original JSONL records. The formatted view uses `jq` when available and falls back to `tail -F` otherwise.
+
+The web UI also exposes `/diagnostics`, which shows the active node, advertised P2P IP, local UDP socket, last `RESOLVE`, last P2P ping, last delivery result, pending queue, and `STATUS`/`SNAPSHOT`/`CHECKSUM` admin commands.
 
 ## Protocol Reference
 
@@ -284,6 +302,10 @@ CREATE TABLE messages (
 | `FLOCK_LOG_DIR` | `shared_logging_utils.py` | `<repo>/logs` | Directory for JSON Lines log files |
 | `FLOCK_LOG_MAX_BYTES` | `shared_logging_utils.py` | `1048576` | Rotation size for each log file |
 | `FLOCK_LOG_BACKUP_COUNT` | `shared_logging_utils.py` | `1` | Number of rotated backups to keep |
+| `FLOCK_PUBLIC_IP` | `client/client.py` | auto-detected | Explicit IP announced by a client for P2P delivery |
+| `FLOCK_NODE_IP` | `server/server.py` | auto-detected | Explicit server IP announced to other server nodes |
+| `FLOCK_SESSION_TTL_HOURS` | `client/ui_flask.py` | `12` | Flask web-session lifetime in hours |
+| `FLOCK_SECRET_KEY` | `client/ui_flask.py` | persisted in `client/auth/flask_session.key` | Flask cookie signing secret |
 | `FLOCK_REPLICA_FULL_SYNC_INTERVAL` | `server/server.py` | `30` seconds | Periodic full replica sync interval |
 | `FLOCK_STATUS_LOG_INTERVAL` | `server/server.py` | `30` seconds | Periodic status log interval; set `0` to disable |
 

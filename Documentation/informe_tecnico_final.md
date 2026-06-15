@@ -161,6 +161,7 @@ Referencias de apoyo: Conf4 para seguridad, privacidad y fronteras de confianza.
 - Docker Swarm si se despliega en varias maquinas.
 - Puertos UDP `12345`, `12346`, `10003` abiertos.
 - Puertos TCP `5000`, `5001`, `5002`, `5003` segun clientes web usados.
+- En pruebas entre maquinas, definir `FLOCK_NODE_IP=<IP_LAN_SERVIDOR>` en servidores y `FLOCK_PUBLIC_IP=<IP_LAN_CLIENTE>` en clientes.
 
 ### Ejecucion local
 
@@ -178,6 +179,13 @@ cd server
 ../venv/bin/python server.py node1
 ```
 
+Si el servidor corre en otra PC:
+
+```bash
+cd server
+FLOCK_NODE_IP=<IP_LAN_SERVIDOR> ../venv/bin/python server.py node1
+```
+
 Terminal 2:
 
 ```bash
@@ -190,6 +198,13 @@ Terminal 3:
 ```bash
 cd client
 ../venv/bin/python ui_flask.py
+```
+
+Si el cliente corre en otra PC:
+
+```bash
+cd client
+FLOCK_PUBLIC_IP=<IP_LAN_CLIENTE> ../venv/bin/python ui_flask.py
 ```
 
 Abrir:
@@ -211,7 +226,7 @@ cd client
 ./tail_logs.sh
 ./tail_logs.sh server
 ./tail_logs.sh client
-venv/bin/pytest -q
+.venv/bin/python -m pytest -q
 ```
 
 Comandos administrativos UDP disponibles:
@@ -274,7 +289,40 @@ Detener:
 docker stack rm flock
 ```
 
-## 10. Video de Demostracion
+## 10. Matriz de Cumplimiento de la Rubrica Final
+
+| Requisito de `informe_final_mundial.pdf` | Cumplimiento en Flock | Evidencia |
+| --- | --- | --- |
+| Informe tecnico en Markdown/PDF | Cubierto | `Documentation/informe_tecnico_final.md` documenta arquitectura, ejecucion, pruebas y trade-offs. |
+| Codigo fuente y configuracion funcional | Cubierto | `server/`, `client/`, `router/`, `Dockerfile`, `docker-stack.yml`, `requirements.txt`. |
+| Instrucciones reproducibles | Cubierto | Seccion 9 y `README.md` incluyen ejecucion local, Docker Swarm, logs y pruebas. |
+| Video en `minube.uh.cu` | Pendiente externo | `video_link.txt` mantiene la marca `PENDIENTE` hasta reemplazarla por el enlace real. |
+| Arquitectura y organizacion | Cubierto | DHT tipo Chord, gestores de identidad distribuidos, clientes P2P, proxy multicast opcional. |
+| Procesos y concurrencia | Cubierto | Servidor multihilo, cliente con workers de recepcion, reintento y reconexion, Flask Socket.IO. |
+| Comunicacion y protocolos | Cubierto | UDP cliente-servidor, UDP servidor-servidor, UDP P2P cifrado, comandos administrativos JSON. |
+| Coordinacion y sincronizacion | Cubierto con limitacion declarada | Anillo, predecessor/successor, sucesores de respaldo, versiones monotonicamente crecientes, sin consenso fuerte. |
+| Nombrado y localizacion | Cubierto | Hash de `username`, rangos DHT, broadcast/multicast, cache local de contactos. |
+| Consistencia y replicacion | Cubierto | Consistencia eventual de presencia, replicas configurables, `SNAPSHOT`, `CHECKSUM`, `SYNC_FROM`. |
+| Tolerancia a fallos | Cubierto | Reparacion con `FIX`, health checks, promocion de sucesores, asimilacion de replicas y reconexion cliente. |
+| Seguridad | Cubierto con limitacion declarada | PBKDF2, clave privada cifrada, firmas de presencia, RSA+AES-GCM, cookies HttpOnly/SameSite, sin TLS academico local. |
+| Prueba 3 up -> 2 down -> 1 up -> 1 down | Cubierto por script | `scripts/acceptance_failure_recovery.py --report-file Documentation/acceptance_failure_recovery_report.json`. |
+| Logs/metricas para defensa | Cubierto | JSONL en `logs/`, `tail_logs.sh`, panel `/diagnostics` con STATUS/SNAPSHOT/CHECKSUM, IP P2P, resolve, ping y cola. |
+
+## 11. Relacion con Principios de las Conferencias
+
+| Tema del curso | Decision de diseno | Trade-off |
+| --- | --- | --- |
+| Sistemas distribuidos y fallos parciales | No hay relay central de mensajes; los servidores solo resuelven identidad y presencia. | Mayor complejidad de red P2P, menor dependencia de un punto central. |
+| Arquitecturas y DHT | Anillo Chord simplificado para particionar el espacio de usuarios. | Busqueda sencilla por rangos; no implementa finger table completa. |
+| Procesos | Hilos por servicio de fondo y contenedores para despliegue. | Implementacion comprensible para defensa; requiere cuidado con locks y sockets. |
+| Comunicacion | Mensajes UDP con timeouts y comandos autocontenidos. | Baja sobrecarga; la fiabilidad se maneja con reintentos, logs y cola local. |
+| Coordinacion | Reparacion del anillo, health checks y versionado de registros. | Consistencia eventual en vez de consenso fuerte. |
+| Nombrado | Nombres planos `username` -> hash -> nodo responsable. | Localizacion distribuida simple y cacheable. |
+| Consistencia y replicacion | Escritura en nodo propietario y replicas de respaldo. | Disponibilidad practica; convergencia tras reconciliacion. |
+| Tolerancia a fallas | Redundancia fisica de nodos y recuperacion hacia adelante. | Tolera crash/omision no bizantina, no respuestas arbitrarias maliciosas. |
+| Seguridad | Identidad firmada y cifrado extremo a extremo. | Los servidores no leen contenido; la red local academica no usa TLS/mTLS. |
+
+## 12. Video de Demostracion
 
 El video debe subirse a `minube.uh.cu`, durar como maximo 15 minutos y estar referenciado tambien en `video_link.txt`.
 
@@ -290,12 +338,12 @@ Guion recomendado:
 8. Mostrar `SNAPSHOT`, `CHECKSUM`, logs de deteccion de fallos y resoluciones `OK`.
 9. Cerrar con la explicacion del modelo: DHT + replicacion eventual + mensajes P2P cifrados.
 
-## 11. Checklist Pre-entrega
+## 13. Checklist Pre-entrega
 
-- [ ] Informe final actualizado y versionado.
+- [x] Informe final actualizado y versionado.
 - [ ] `video_link.txt` con enlace real de minube.uh.cu.
-- [ ] `venv/bin/pytest -q` pasa.
-- [ ] `python scripts/acceptance_failure_recovery.py` pasa en Docker.
+- [x] `.venv/bin/python -m pytest -q` pasa.
+- [ ] `python scripts/acceptance_failure_recovery.py` pasa en Docker. Pendiente en este entorno por permisos sobre `/var/run/docker.sock`.
 - [ ] Video muestra UI, logs y prueba 3 up -> 2 down -> 1 up -> 1 down.
-- [ ] README o informe contiene comandos reproducibles desde cero.
-- [ ] No quedan credenciales reales ni datos locales innecesarios en la entrega.
+- [x] README o informe contiene comandos reproducibles desde cero.
+- [x] No quedan credenciales reales ni datos locales innecesarios en la entrega.

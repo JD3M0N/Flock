@@ -9,6 +9,8 @@ import struct
 import hashlib
 import hmac
 import secrets
+import uuid
+import ipaddress
 
 from logging_utils import configure_logger, log_event, summarize_command
 
@@ -42,8 +44,46 @@ class chat_client:
         self.pending_key_exchanges = {}
         self.background_started = False
         self.auth_directory = os.path.join(os.path.dirname(__file__), "auth")
+        self.session_id = None
+        self.last_advertised_ip = None
+        self.last_server_command = None
+        self.last_resolve = None
+        self.last_peer_ping = None
+        self.last_delivery = None
+        self.delivery_events = []
 
         self.db = db_manager.user_db()
+
+    def set_session_id(self, session_id):
+        """Attach a web-session identifier to future logs."""
+        self.session_id = session_id
+
+    def _operation_id(self, prefix):
+        return f"{prefix}-{uuid.uuid4().hex[:10]}"
+
+    def _event_time(self):
+        return time.strftime("%H:%M:%S")
+
+    def _remember_delivery_event(self, kind, **details):
+        event = {
+            "kind": kind,
+            "time": self._event_time(),
+            **details,
+        }
+        self.delivery_events.insert(0, event)
+        del self.delivery_events[30:]
+        return event
+
+    def delivery_diagnostics(self):
+        """Return recent network diagnostics safe to expose in the demo UI."""
+        return {
+            "advertised_ip": self.last_advertised_ip,
+            "last_server_command": self.last_server_command,
+            "last_resolve": self.last_resolve,
+            "last_peer_ping": self.last_peer_ping,
+            "last_delivery": self.last_delivery,
+            "events": self.delivery_events[:10],
+        }
 
     def server_auto_reconnect(self):
         """Background loop that attempts reconnect when server is marked down."""
@@ -163,29 +203,75 @@ class chat_client:
                 break
         return response, address
 
-    def send_command(self, command) -> str:
+    def send_command(self, command, operation_id=None) -> str:
         """Send a command to the configured server and return its response string.
 
         Marks the server as down on any communication error.
         """
+        operation_id = operation_id or self._operation_id("server")
+        command_summary = summarize_command(command)
+        peer_ip = self.server_address[0] if self.server_address else None
+        peer_port = self.server_address[1] if self.server_address else None
+        start = time.monotonic()
         try:
             self.client_socket.sendto(f"{command}".encode(), self.server_address)
             response, _ = self.read_response(self.client_socket)
-            command_summary = summarize_command(command)
+            duration_ms = int((time.monotonic() - start) * 1000)
+            response_status = response.split(" ", 1)[0] if response else "EMPTY"
+            self.last_server_command = {
+                "time": self._event_time(),
+                "command": command_summary.get("command"),
+                "peer_ip": peer_ip,
+                "peer_port": peer_port,
+                "status": response_status,
+                "duration_ms": duration_ms,
+            }
             log_event(
                 logger,
                 "INFO",
-                "server_command_sent",
+                "server_command_completed",
                 node=self.username,
+                session_id=self.session_id,
+                operation_id=operation_id,
+                phase="server_command",
                 peer=str(self.server_address),
+                peer_ip=peer_ip,
+                peer_port=peer_port,
                 username=command_summary.get("username"),
                 version=command_summary.get("version"),
-                result=command_summary,
+                duration_ms=duration_ms,
+                result={"request": command_summary, "response_status": response_status},
             )
             return response
         except Exception as e:
+            duration_ms = int((time.monotonic() - start) * 1000)
             self.server_down = True
-            logger.error("Communication with server %s failed: %s", self.server_address, e)
+            self.last_server_command = {
+                "time": self._event_time(),
+                "command": command_summary.get("command"),
+                "peer_ip": peer_ip,
+                "peer_port": peer_port,
+                "status": "ERROR",
+                "duration_ms": duration_ms,
+                "reason": str(e),
+            }
+            log_event(
+                logger,
+                "ERROR",
+                "server_command_failed",
+                node=self.username,
+                session_id=self.session_id,
+                operation_id=operation_id,
+                phase="server_command",
+                peer=str(self.server_address),
+                peer_ip=peer_ip,
+                peer_port=peer_port,
+                username=command_summary.get("username"),
+                version=command_summary.get("version"),
+                duration_ms=duration_ms,
+                reason=str(e),
+                result=command_summary,
+            )
             return f"ERROR in communication with server: {e}"
 
     def send_message(self, recipient, message):
@@ -193,50 +279,241 @@ class chat_client:
 
         `message` is expected in the form 'MESSAGE <sender> <text>'. Returns True on success.
         """
+        operation_id = self._operation_id("msg")
+        start = time.monotonic()
         _, sender, text = message.split(" ", 2)
+        self.last_delivery = {
+            "time": self._event_time(),
+            "operation_id": operation_id,
+            "recipient": recipient,
+            "status": "started",
+        }
+        log_event(
+            logger,
+            "INFO",
+            "message_delivery_started",
+            node=self.username,
+            session_id=self.session_id,
+            operation_id=operation_id,
+            phase="start",
+            username=sender,
+            peer=recipient,
+            result={"text_length": len(text)},
+        )
 
         if recipient == self.username:
             self.db.insert_new_message(self.username, recipient, text, True)
-            logger.info("Stored loopback message for '%s'", recipient)
+            duration_ms = int((time.monotonic() - start) * 1000)
+            self.last_delivery = {
+                "time": self._event_time(),
+                "operation_id": operation_id,
+                "recipient": recipient,
+                "status": "delivered",
+                "reason": "loopback",
+                "duration_ms": duration_ms,
+            }
+            self._remember_delivery_event("message_delivered", recipient=recipient, reason="loopback")
+            log_event(
+                logger,
+                "INFO",
+                "message_delivery_completed",
+                node=self.username,
+                session_id=self.session_id,
+                operation_id=operation_id,
+                phase="loopback",
+                username=sender,
+                peer=recipient,
+                duration_ms=duration_ms,
+                reason="loopback",
+                result="stored_locally",
+            )
             return True
 
         try:
             address = self.contact_list.get(recipient)
             if not address:
-                address = self.resolve_user(recipient)
+                address = self.resolve_user(recipient, operation_id=operation_id)
 
             if not address:
-                logger.warning("Unable to resolve recipient '%s'", recipient)
+                duration_ms = int((time.monotonic() - start) * 1000)
+                self.last_delivery = {
+                    "time": self._event_time(),
+                    "operation_id": operation_id,
+                    "recipient": recipient,
+                    "status": "queued",
+                    "reason": "resolve_failed",
+                    "duration_ms": duration_ms,
+                }
+                self._remember_delivery_event("message_queued", recipient=recipient, reason="resolve_failed")
+                log_event(
+                    logger,
+                    "WARNING",
+                    "message_delivery_failed",
+                    node=self.username,
+                    session_id=self.session_id,
+                    operation_id=operation_id,
+                    phase="resolve",
+                    username=sender,
+                    peer=recipient,
+                    duration_ms=duration_ms,
+                    reason="resolve_failed",
+                )
                 return False
 
-            if not self.ensure_peer_key(recipient):
-                logger.warning("Unable to obtain trusted key for '%s'", recipient)
+            if not self.ensure_peer_key(recipient, operation_id=operation_id):
+                duration_ms = int((time.monotonic() - start) * 1000)
+                self.last_delivery = {
+                    "time": self._event_time(),
+                    "operation_id": operation_id,
+                    "recipient": recipient,
+                    "address": f"{address[0]}:{address[1]}",
+                    "status": "queued",
+                    "reason": "peer_key_missing",
+                    "duration_ms": duration_ms,
+                }
+                self._remember_delivery_event("message_queued", recipient=recipient, reason="peer_key_missing")
+                log_event(
+                    logger,
+                    "WARNING",
+                    "message_delivery_failed",
+                    node=self.username,
+                    session_id=self.session_id,
+                    operation_id=operation_id,
+                    phase="peer_key",
+                    username=sender,
+                    peer=recipient,
+                    peer_ip=address[0],
+                    peer_port=address[1],
+                    duration_ms=duration_ms,
+                    reason="peer_key_missing",
+                )
                 return False
 
             encrypted_text = self.crypto.encrypt_message(recipient, text)
             wire_message = f"MESSAGE {sender} {encrypted_text}"
 
-            if self.is_user_online(address):
+            if self.is_user_online(address, operation_id=operation_id, recipient=recipient):
                 self.db.insert_new_message(self.username, recipient, text, True)
                 self.message_socket.sendto(wire_message.encode(), address)
-                logger.info("Message from '%s' delivered to '%s' at %s", sender, recipient, address)
+                duration_ms = int((time.monotonic() - start) * 1000)
+                self.last_delivery = {
+                    "time": self._event_time(),
+                    "operation_id": operation_id,
+                    "recipient": recipient,
+                    "address": f"{address[0]}:{address[1]}",
+                    "status": "delivered",
+                    "duration_ms": duration_ms,
+                }
+                self._remember_delivery_event(
+                    "message_delivered",
+                    recipient=recipient,
+                    address=f"{address[0]}:{address[1]}",
+                )
+                log_event(
+                    logger,
+                    "INFO",
+                    "message_delivery_completed",
+                    node=self.username,
+                    session_id=self.session_id,
+                    operation_id=operation_id,
+                    phase="p2p_send",
+                    username=sender,
+                    peer=recipient,
+                    peer_ip=address[0],
+                    peer_port=address[1],
+                    duration_ms=duration_ms,
+                    result="sent",
+                )
                 return True
             else:
-                address = self.resolve_user(recipient)
-                if address and self.is_user_online(address):
+                address = self.resolve_user(recipient, operation_id=operation_id)
+                if address and self.is_user_online(address, operation_id=operation_id, recipient=recipient):
                     self.db.insert_new_message(self.username, recipient, text, True)
                     self.message_socket.sendto(wire_message.encode(), address)
-                    logger.info(
-                        "Message from '%s' delivered to '%s' after refresh at %s",
-                        sender,
-                        recipient,
-                        address,
+                    duration_ms = int((time.monotonic() - start) * 1000)
+                    self.last_delivery = {
+                        "time": self._event_time(),
+                        "operation_id": operation_id,
+                        "recipient": recipient,
+                        "address": f"{address[0]}:{address[1]}",
+                        "status": "delivered",
+                        "reason": "after_resolve_refresh",
+                        "duration_ms": duration_ms,
+                    }
+                    self._remember_delivery_event(
+                        "message_delivered",
+                        recipient=recipient,
+                        address=f"{address[0]}:{address[1]}",
+                        reason="after_resolve_refresh",
+                    )
+                    log_event(
+                        logger,
+                        "INFO",
+                        "message_delivery_completed",
+                        node=self.username,
+                        session_id=self.session_id,
+                        operation_id=operation_id,
+                        phase="p2p_send_after_refresh",
+                        username=sender,
+                        peer=recipient,
+                        peer_ip=address[0],
+                        peer_port=address[1],
+                        duration_ms=duration_ms,
+                        reason="after_resolve_refresh",
+                        result="sent",
                     )
                     return True
-                logger.warning("Recipient '%s' is offline; message queued", recipient)
+                duration_ms = int((time.monotonic() - start) * 1000)
+                self.last_delivery = {
+                    "time": self._event_time(),
+                    "operation_id": operation_id,
+                    "recipient": recipient,
+                    "address": f"{address[0]}:{address[1]}" if address else None,
+                    "status": "queued",
+                    "reason": "peer_offline",
+                    "duration_ms": duration_ms,
+                }
+                self._remember_delivery_event("message_queued", recipient=recipient, reason="peer_offline")
+                log_event(
+                    logger,
+                    "WARNING",
+                    "message_delivery_failed",
+                    node=self.username,
+                    session_id=self.session_id,
+                    operation_id=operation_id,
+                    phase="p2p_ping",
+                    username=sender,
+                    peer=recipient,
+                    peer_ip=address[0] if address else None,
+                    peer_port=address[1] if address else None,
+                    duration_ms=duration_ms,
+                    reason="peer_offline",
+                )
                 return False
         except Exception as e:
-            logger.error("Error sending message to '%s': %s", recipient, e)
+            duration_ms = int((time.monotonic() - start) * 1000)
+            self.last_delivery = {
+                "time": self._event_time(),
+                "operation_id": operation_id,
+                "recipient": recipient,
+                "status": "queued",
+                "reason": str(e),
+                "duration_ms": duration_ms,
+            }
+            self._remember_delivery_event("message_queued", recipient=recipient, reason=str(e))
+            log_event(
+                logger,
+                "ERROR",
+                "message_delivery_failed",
+                node=self.username,
+                session_id=self.session_id,
+                operation_id=operation_id,
+                phase="exception",
+                username=sender,
+                peer=recipient,
+                duration_ms=duration_ms,
+                reason=str(e),
+            )
             return False
 
     def add_to_pending_list(self, recipient, message):
@@ -247,36 +524,112 @@ class chat_client:
                 self.pending_list[recipient].append(message)
             else:
                 self.pending_list[recipient] = [message]
-            logger.info(
-                "Queued pending message for '%s'. Pending count=%s",
-                recipient,
-                len(self.pending_list[recipient]),
+            queue_count = len(self.pending_list[recipient])
+            self._remember_delivery_event("message_queued_persisted", recipient=recipient, queue_count=queue_count)
+            log_event(
+                logger,
+                "INFO",
+                "message_queued",
+                node=self.username,
+                session_id=self.session_id,
+                phase="queue",
+                peer=recipient,
+                username=self.username,
+                queue_count=queue_count,
+                result="persisted",
             )
 
-    def resolve_user(self, username):
+    def resolve_user(self, username, operation_id=None):
         """Ask server to resolve `username` and cache the result locally."""
-        response = self.send_command(f"RESOLVE {username}")
+        operation_id = operation_id or self._operation_id("resolve")
+        response = self.send_command(f"RESOLVE {username}", operation_id=operation_id)
         if response.startswith("OK"):
             _, ip, port, public_key, _version = response.split(" ", 4)
             self.contact_list[username] = (ip, int(port))
             if self.crypto and public_key:
                 self.crypto.store_peer_key(username, public_key)
-            logger.info("Resolved user '%s' to %s:%s", username, ip, port)
+            self.last_resolve = {
+                "time": self._event_time(),
+                "operation_id": operation_id,
+                "username": username,
+                "ip": ip,
+                "port": int(port),
+                "status": "ok",
+                "version": _version,
+            }
+            log_event(
+                logger,
+                "INFO",
+                "resolve_completed",
+                node=self.username,
+                session_id=self.session_id,
+                operation_id=operation_id,
+                phase="resolve",
+                peer=username,
+                peer_ip=ip,
+                peer_port=int(port),
+                username=username,
+                version=_version,
+                result="cached",
+            )
             return (ip, int(port))
         else:
-            logger.warning("Resolve failed for user '%s': %s", username, response)
+            self.last_resolve = {
+                "time": self._event_time(),
+                "operation_id": operation_id,
+                "username": username,
+                "status": "failed",
+                "reason": response,
+            }
+            log_event(
+                logger,
+                "WARNING",
+                "resolve_failed",
+                node=self.username,
+                session_id=self.session_id,
+                operation_id=operation_id,
+                phase="resolve",
+                peer=username,
+                username=username,
+                reason=response,
+            )
             return None
 
-    def ensure_peer_key(self, recipient, timeout=5):
+    def ensure_peer_key(self, recipient, timeout=5, operation_id=None):
         """Ensure we have a trusted server-backed public key for `recipient`."""
         if self.crypto.has_peer_key(recipient):
+            log_event(
+                logger,
+                "INFO",
+                "peer_key_ready",
+                node=self.username,
+                session_id=self.session_id,
+                operation_id=operation_id,
+                phase="peer_key",
+                peer=recipient,
+                result="cached",
+            )
             return True
 
-        return self.resolve_user(recipient) is not None
+        resolved = self.resolve_user(recipient, operation_id=operation_id) is not None
+        log_event(
+            logger,
+            "INFO" if resolved else "WARNING",
+            "peer_key_ready" if resolved else "peer_key_missing",
+            node=self.username,
+            session_id=self.session_id,
+            operation_id=operation_id,
+            phase="peer_key",
+            peer=recipient,
+            result="resolved" if resolved else "missing",
+        )
+        return resolved
         
     def _register_remote_user(self, username):
         try:
-            message_ip = self.get_ip()
+            server_ip = self.server_address[0] if self.server_address else None
+            message_ip = self.get_ip(server_ip)
+            self.last_advertised_ip = message_ip
             _, message_port = self.message_socket.getsockname()
             version = time.time_ns()
             public_key = self.crypto.get_public_key_b64()
@@ -288,12 +641,22 @@ class chat_client:
             )
 
             for attempt in range(2):
-                response = self.send_command(command)
-                logger.info(
-                    "Remote register response for '%s' (attempt %s): %s",
-                    username,
-                    attempt + 1,
-                    response,
+                operation_id = self._operation_id("register")
+                response = self.send_command(command, operation_id=operation_id)
+                log_event(
+                    logger,
+                    "INFO",
+                    "presence_register_attempt",
+                    node=username,
+                    session_id=self.session_id,
+                    operation_id=operation_id,
+                    phase="register",
+                    username=username,
+                    version=version,
+                    advertised_ip=message_ip,
+                    peer_ip=server_ip,
+                    peer_port=self.server_address[1] if self.server_address else None,
+                    result={"attempt": attempt + 1, "response_status": response.split(" ", 1)[0]},
                 )
                 if response.startswith("OK"):
                     return True
@@ -301,17 +664,34 @@ class chat_client:
                 # If the selected server just died, reconnect synchronously and retry once.
                 if self.server_down and attempt == 0 and self.auto_connect():
                     self.server_down = False
-                    logger.warning(
-                        "Retrying remote registration for '%s' after reconnecting to %s",
-                        username,
-                        self.server_address,
+                    log_event(
+                        logger,
+                        "WARNING",
+                        "presence_register_retry",
+                        node=username,
+                        session_id=self.session_id,
+                        operation_id=operation_id,
+                        phase="register",
+                        username=username,
+                        advertised_ip=message_ip,
+                        peer=str(self.server_address),
+                        reason="server_reconnected",
                     )
                     continue
                 break
 
             return False
         except Exception as e:
-            logger.error("Registration error for '%s': %s", username, e)
+            log_event(
+                logger,
+                "ERROR",
+                "presence_register_failed",
+                node=username,
+                session_id=self.session_id,
+                phase="register",
+                username=username,
+                reason=str(e),
+            )
             return False
 
     def register_user(self, username, password):
@@ -417,18 +797,57 @@ class chat_client:
                         self.resolve_user(sender)
 
                     if not self.crypto.has_peer_key(sender):
-                        logger.warning("Dropped message from '%s' because no trusted key is available", sender)
+                        log_event(
+                            logger,
+                            "WARNING",
+                            "message_dropped",
+                            node=self.username,
+                            session_id=self.session_id,
+                            phase="receive",
+                            peer=sender,
+                            peer_ip=address[0],
+                            peer_port=address[1],
+                            reason="peer_key_missing",
+                        )
                         continue
 
                     try:
                         text = self.crypto.decrypt_message(encrypted_text)
-                    except Exception:
-                        logger.warning("Dropped undecryptable message from '%s'", sender)
+                    except Exception as exc:
+                        log_event(
+                            logger,
+                            "WARNING",
+                            "message_dropped",
+                            node=self.username,
+                            session_id=self.session_id,
+                            phase="decrypt",
+                            peer=sender,
+                            peer_ip=address[0],
+                            peer_port=address[1],
+                            reason=str(exc),
+                        )
                         continue
 
                     self.db.insert_new_message(sender, self.username, text, False)
                     self.contact_list[sender] = address
-                    logger.info("Received message from '%s' at %s", sender, address)
+                    self._remember_delivery_event(
+                        "message_received",
+                        sender=sender,
+                        address=f"{address[0]}:{address[1]}",
+                    )
+                    log_event(
+                        logger,
+                        "INFO",
+                        "message_received",
+                        node=self.username,
+                        session_id=self.session_id,
+                        phase="receive",
+                        peer=sender,
+                        peer_ip=address[0],
+                        peer_port=address[1],
+                        username=sender,
+                        result={"text_length": len(text)},
+                    )
 
                     if self.on_message_received:
                         try:
@@ -442,7 +861,18 @@ class chat_client:
                         response = f"PUBKEY_RES {self.username} {self.crypto.get_public_key_b64()}"
                         self.message_socket.sendto(response.encode(), address)
                         self.contact_list[requester] = address
-                        logger.info("Shared public key with '%s'", requester)
+                        log_event(
+                            logger,
+                            "INFO",
+                            "peer_key_shared",
+                            node=self.username,
+                            session_id=self.session_id,
+                            phase="peer_key",
+                            peer=requester,
+                            peer_ip=address[0],
+                            peer_port=address[1],
+                            result="PUBKEY_RES",
+                        )
                         if not self.crypto.has_peer_key(requester):
                             req = f"PUBKEY_REQ {self.username}"
                             self.message_socket.sendto(req.encode(), address)
@@ -453,30 +883,101 @@ class chat_client:
                         resolved_address = self.resolve_user(peer_username)
                         if resolved_address and self.crypto.has_peer_key(peer_username):
                             self.contact_list[peer_username] = address
-                            logger.info("Validated peer key for '%s' against identity manager", peer_username)
+                            log_event(
+                                logger,
+                                "INFO",
+                                "peer_key_validated",
+                                node=self.username,
+                                session_id=self.session_id,
+                                phase="peer_key",
+                                peer=peer_username,
+                                peer_ip=address[0],
+                                peer_port=address[1],
+                                result="identity_manager_match",
+                            )
                             event = self.pending_key_exchanges.get(peer_username)
                             if event:
                                 event.set()
 
                 elif message.startswith("PING"):
                     self.message_socket.sendto("PONG".encode(), address)
-            except Exception:
-                pass
+            except socket.timeout:
+                continue
+            except Exception as exc:
+                log_event(
+                    logger,
+                    "DEBUG",
+                    "client_listener_error",
+                    node=self.username,
+                    session_id=self.session_id,
+                    phase="receive",
+                    reason=str(exc),
+                )
 
-    def is_user_online(self, address):
+    def is_user_online(self, address, operation_id=None, recipient=None):
         """Return True if a short UDP ping to `address` receives a PONG reply."""
+        start = time.monotonic()
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.settimeout(0.5)
                 sock.bind(('', 0))
-                sock_port = sock.getsockname()[1]
                 sock.sendto(f"PING".encode(), address)
                 response, _ = sock.recvfrom(1024)
-                return response.decode() == "PONG"
+                ok = response.decode() == "PONG"
+                duration_ms = int((time.monotonic() - start) * 1000)
+                self.last_peer_ping = {
+                    "time": self._event_time(),
+                    "operation_id": operation_id,
+                    "recipient": recipient,
+                    "ip": address[0],
+                    "port": address[1],
+                    "ok": ok,
+                    "duration_ms": duration_ms,
+                }
+                log_event(
+                    logger,
+                    "INFO" if ok else "WARNING",
+                    "peer_ping_completed",
+                    node=self.username,
+                    session_id=self.session_id,
+                    operation_id=operation_id,
+                    phase="p2p_ping",
+                    peer=recipient,
+                    peer_ip=address[0],
+                    peer_port=address[1],
+                    duration_ms=duration_ms,
+                    result="PONG" if ok else response.decode(),
+                )
+                return ok
         except socket.timeout:
-            pass
-        except Exception:
-            pass
+            reason = "timeout"
+        except Exception as exc:
+            reason = str(exc)
+        duration_ms = int((time.monotonic() - start) * 1000)
+        self.last_peer_ping = {
+            "time": self._event_time(),
+            "operation_id": operation_id,
+            "recipient": recipient,
+            "ip": address[0],
+            "port": address[1],
+            "ok": False,
+            "duration_ms": duration_ms,
+            "reason": reason,
+        }
+        log_event(
+            logger,
+            "WARNING",
+            "peer_ping_failed",
+            node=self.username,
+            session_id=self.session_id,
+            operation_id=operation_id,
+            phase="p2p_ping",
+            peer=recipient,
+            peer_ip=address[0],
+            peer_port=address[1],
+            duration_ms=duration_ms,
+            reason=reason,
+        )
         return False
 
     def send_pending_messages(self):
@@ -493,14 +994,89 @@ class chat_client:
                 logger.error("Error sending pending messages: %s", e)
                 pass
 
-    def get_ip(self):
-        """Return the IP address of the local host name."""
+    def _is_loopback_ip(self, ip):
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.connect(("8.8.8.8", 80))
-                return sock.getsockname()[0]
+            return ipaddress.ip_address(ip).is_loopback
+        except ValueError:
+            return False
+
+    def _valid_ipv4(self, ip):
+        try:
+            parsed = ipaddress.ip_address(ip)
+            return parsed.version == 4 and not parsed.is_unspecified
+        except ValueError:
+            return False
+
+    def _hostname_candidates(self):
+        candidates = []
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = info[4][0]
+                if ip not in candidates:
+                    candidates.append(ip)
         except Exception:
-            return socket.gethostbyname(socket.gethostname())
+            pass
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+            if ip not in candidates:
+                candidates.append(ip)
+        except Exception:
+            pass
+        return candidates
+
+    def get_ip(self, target_ip=None):
+        """Return the best local IP to advertise to peers.
+
+        Priority:
+        1. FLOCK_PUBLIC_IP, when explicitly configured.
+        2. The source IP selected by the OS route to the active server.
+        3. A non-loopback hostname address.
+        4. 127.0.0.1 only when the selected server is local or no better address exists.
+        """
+        explicit_ip = os.environ.get("FLOCK_PUBLIC_IP", "").strip()
+        if explicit_ip:
+            if self._valid_ipv4(explicit_ip):
+                self.last_advertised_ip = explicit_ip
+                return explicit_ip
+            log_event(
+                logger,
+                "WARNING",
+                "advertised_ip_invalid",
+                node=self.username,
+                session_id=self.session_id,
+                advertised_ip=explicit_ip,
+                reason="FLOCK_PUBLIC_IP is not a valid IPv4 address",
+            )
+
+        if target_ip:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.connect((target_ip, 12345))
+                    candidate = sock.getsockname()[0]
+                    if self._valid_ipv4(candidate) and (
+                        not self._is_loopback_ip(candidate) or self._is_loopback_ip(target_ip)
+                    ):
+                        self.last_advertised_ip = candidate
+                        return candidate
+            except Exception as exc:
+                log_event(
+                    logger,
+                    "WARNING",
+                    "advertised_ip_route_failed",
+                    node=self.username,
+                    session_id=self.session_id,
+                    peer_ip=target_ip,
+                    reason=str(exc),
+                )
+
+        for candidate in self._hostname_candidates():
+            if self._valid_ipv4(candidate) and not self._is_loopback_ip(candidate):
+                self.last_advertised_ip = candidate
+                return candidate
+
+        fallback = "127.0.0.1"
+        self.last_advertised_ip = fallback
+        return fallback
 
     def run_background(self):
         """Start background threads for message receiving, pending delivery and reconnection."""
@@ -566,10 +1142,3 @@ if __name__ == "__main__":
     # client = chat_client()
     # client.run_ui()
     pass
-
-
-"""
-TODO:
-- [x] Change to TCP at least for sending messages (one socket UDP for pinging and one thread with TCP for every conversation)
-- [x] Implement what happens if the server is down (auto search of new server)
-"""
