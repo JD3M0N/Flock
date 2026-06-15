@@ -388,34 +388,4 @@ docker stack rm flock
 | Tolerancia a fallas | Redundancia fisica de nodos y recuperacion hacia adelante. | Tolera crash/omision no bizantina, no respuestas arbitrarias maliciosas. |
 | Seguridad | Identidad firmada y cifrado extremo a extremo. | Los servidores no leen contenido; la red local academica no usa TLS/mTLS. |
 
-## 12. Video de Demostracion
 
-El video debe subirse a `minube.uh.cu`, durar como maximo 15 minutos y estar referenciado tambien en `video_link.txt`.
-
-Guion recomendado:
-
-1. Mostrar repositorio, informe y `video_link.txt`.
-2. Ejecutar `limpiar --yes --logs` y `preparar`.
-3. Ejecutar `montar-nodo nodo1`, `montar-nodo nodo2`, `montar-nodo nodo3`.
-4. Ejecutar `montar-cliente cliente1` y `montar-cliente cliente2`.
-5. Abrir UI web y descubrir servidores.
-6. Autenticar dos usuarios.
-7. Enviar mensajes P2P cifrados.
-8. Mostrar panel de diagnostico con `STATUS`, `SNAPSHOT` y `CHECKSUM`.
-9. Ejecutar `python3 scripts/flock_local.py sembrar-estado --nodo nodo1`.
-10. Ejecutar `parar-nodo nodo2`, `parar-nodo nodo3`, `montar-nodo nodo4` y `parar-nodo nodo1`.
-11. Ejecutar `verificar --nodo nodo4 --reporte Documentation/prueba_local_estado.json`.
-12. Mostrar logs de `nodo4` con deteccion de fallos, reparacion y checksum.
-13. Si queda tiempo, ejecutar `python3 scripts/flock_local.py acceptance`.
-14. Cerrar con la explicacion del modelo: DHT + replicacion eventual + mensajes P2P cifrados.
-
-## 13. Checklist Pre-entrega
-
-- [x] Informe final actualizado en la raiz y copia sincronizada en `Documentation/`.
-- [ ] `video_link.txt` con enlace real de minube.uh.cu.
-- [x] `.venv/bin/python -m pytest -q` pasa.
-- [ ] `python3 scripts/flock_local.py verificar --nodo nodo4` pasa durante la grabacion.
-- [ ] `python3 scripts/flock_local.py acceptance` pasa en Docker.
-- [ ] Video muestra UI, logs y prueba 3 up -> 2 down -> 1 up -> 1 down.
-- [x] README o informe contiene comandos reproducibles desde cero.
-- [x] No quedan credenciales reales ni datos locales innecesarios en la entrega.

@@ -2,6 +2,8 @@
 import argparse
 import base64
 import json
+import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -16,6 +18,11 @@ NETWORK = "flock-acceptance-net"
 SERVER_PORT = 12345
 PING_PORT = 12346
 CONTAINERS = ["flock-acc-node1", "flock-acc-node2", "flock-acc-node3", "flock-acc-node4"]
+DOCKER_CMD = shlex.split(os.environ.get("FLOCK_DOCKER_CMD", "docker"))
+
+
+def docker_args(*args):
+    return [*DOCKER_CMD, *args]
 
 
 def run(cmd, check=True, capture=False):
@@ -34,19 +41,18 @@ def run(cmd, check=True, capture=False):
 
 def cleanup():
     for name in CONTAINERS:
-        run(["docker", "rm", "-f", name], check=False)
-    run(["docker", "network", "rm", NETWORK], check=False)
+        run(docker_args("rm", "-f", name), check=False)
+    run(docker_args("network", "rm", NETWORK), check=False)
 
 
 def container_ip(name):
     return run(
-        [
-            "docker",
+        docker_args(
             "inspect",
             "-f",
             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
             name,
-        ],
+        ),
         capture=True,
     )
 
@@ -96,8 +102,7 @@ def wait_for_admin(ip, command, timeout=20):
 
 def start_server(container_name, node_name):
     run(
-        [
-            "docker",
+        docker_args(
             "run",
             "-d",
             "--name",
@@ -110,7 +115,7 @@ def start_server(container_name, node_name):
             "python",
             "server/server.py",
             node_name,
-        ],
+        ),
         capture=True,
     )
     return wait_for_server(container_name)
@@ -165,9 +170,9 @@ def main():
     try:
         if not args.skip_build:
             print("Building Docker image...")
-            run(["docker", "build", "-t", IMAGE, "."])
+            run(docker_args("build", "-t", IMAGE, "."))
 
-        run(["docker", "network", "create", NETWORK], capture=True)
+        run(docker_args("network", "create", NETWORK), capture=True)
 
         print("Starting initial 3 servers...")
         node1_ip = start_server("flock-acc-node1", "node1")
@@ -189,7 +194,7 @@ def main():
         }
 
         print("Stopping 2 servers...")
-        run(["docker", "stop", "flock-acc-node2", "flock-acc-node3"], capture=True)
+        run(docker_args("stop", "flock-acc-node2", "flock-acc-node3"), capture=True)
         time.sleep(8)
 
         print("Starting replacement server...")
@@ -197,7 +202,7 @@ def main():
         time.sleep(10)
 
         print("Stopping remaining original server...")
-        run(["docker", "stop", "flock-acc-node1"], capture=True)
+        run(docker_args("stop", "flock-acc-node1"), capture=True)
         time.sleep(8)
 
         final_snapshot = wait_for_admin(node4_ip, "SNAPSHOT")

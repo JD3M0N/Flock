@@ -91,7 +91,7 @@ cd server
 python server.py node1
 ```
 
-For a multi-machine demo, make the server advertise the LAN IP that the other PC can reach:
+For a multi-machine run, make the server advertise the LAN IP that the other PC can reach:
 
 ```bash
 cd server
@@ -112,7 +112,7 @@ cd client
 python ui_flask.py
 ```
 
-For a multi-machine demo, make each client advertise its reachable LAN IP for P2P messages:
+For a multi-machine run, make each client advertise its reachable LAN IP for P2P messages:
 
 ```bash
 cd client
@@ -160,6 +160,35 @@ Flock writes server, client and console logs as JSON Lines under `logs/` by defa
 Use `./tail_logs.sh --raw` to show the original JSONL records. The formatted view uses `jq` when available and falls back to `tail -F` otherwise.
 
 The web UI also exposes `/diagnostics`, which shows the active node, advertised P2P IP, local UDP socket, last `RESOLVE`, last P2P ping, last delivery result, pending queue, and `STATUS`/`SNAPSHOT`/`CHECKSUM` admin commands.
+
+### 4. Local one-PC Docker run
+
+For the final defense video, the simplest reproducible path is the local operation helper:
+
+```bash
+python3 scripts/flock_local.py limpiar --yes --logs
+python3 scripts/flock_local.py preparar
+python3 scripts/flock_local.py montar-nodo nodo1
+python3 scripts/flock_local.py montar-nodo nodo2
+python3 scripts/flock_local.py montar-nodo nodo3
+python3 scripts/flock_local.py montar-cliente cliente1
+python3 scripts/flock_local.py montar-cliente cliente2
+python3 scripts/flock_local.py sembrar-estado --nodo nodo1
+python3 scripts/flock_local.py verificar --nodo nodo1
+python3 scripts/flock_local.py parar-nodo nodo2
+python3 scripts/flock_local.py parar-nodo nodo3
+python3 scripts/flock_local.py montar-nodo nodo4
+python3 scripts/flock_local.py parar-nodo nodo1
+python3 scripts/flock_local.py verificar --nodo nodo4 --reporte Documentation/prueba_local_estado.json
+```
+
+If Docker requires elevated permissions:
+
+```bash
+export FLOCK_DOCKER_CMD="sudo docker"
+```
+
+The full recording guide is in `Documentation/guion_prueba_local.md`.
 
 ## Protocol Reference
 
@@ -242,14 +271,14 @@ Alice                                        Identity ring
 ```
 client/keys/
 └── <username>/
-    ├── private.pem              # RSA-2048 private key (PKCS8, unencrypted)
+    ├── private.pem              # RSA-2048 private key (PKCS8, encrypted when a password is used)
     ├── public.pem               # RSA-2048 public key
     └── contacts/
         ├── alice.pem            # Alice's public key
         └── bob.pem              # Bob's public key
 ```
 
-Keys are generated once on first registration and persisted across sessions. The server never sees, stores, or relays any cryptographic material.
+Keys are generated once on first registration and persisted across sessions. Private keys never leave the client. Servers store public keys, versions and signatures only to bind usernames to identities and to reject stale or conflicting presence updates; they never see private keys or plaintext chat messages.
 
 ## Database Schema
 
@@ -261,7 +290,9 @@ CREATE TABLE users (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
     ip       TEXT NOT NULL,
-    port     INTEGER NOT NULL
+    port     INTEGER NOT NULL,
+    public_key TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 0
 );
 
 -- Replicated data from other nodes (fault tolerance)
@@ -270,6 +301,8 @@ CREATE TABLE replic_users (
     username TEXT NOT NULL UNIQUE,
     ip       TEXT NOT NULL,
     port     INTEGER NOT NULL,
+    public_key TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 0,
     owner    TEXT NOT NULL          -- IP of the owning server
 );
 ```

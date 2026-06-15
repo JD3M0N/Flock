@@ -81,6 +81,9 @@ env.bak/
 *.db
 server/db/
 db/
+Documentation/manual_*.json
+Documentation/prueba_local_estado.json
+Documentation/acceptance_failure_recovery_report.json
 
 # Keys and secrets
 client/auth/
